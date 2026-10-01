@@ -1,0 +1,431 @@
+*Thinking...*
+
+> **Considering code optimization**
+> 
+> I need to respond regarding code optimization under specific constraints and Lean proof. It’s mandatory to fetch URLs and deeply inspect the script data. Since I'm relying on web tools only, there's no terminal execution available. I might be able to get full text, though it could be quite large. I also need to understand the budget: the allowed is 30k, and I currently have about 30k tokens remaining, so efficiency is key here.
+> 
+> **Considering summarization limits**
+> 
+> I'm thinking about the word limit of 200 for the script, which likely means I should summarize each webpage to stay within that range. So, I need to be mindful in selecting the most relevant portions while also supporting the official documents. I want to avoid simply paraphrasing, so I’ll focus on reconstructing my own content from the necessary scripts. I should find the important sections in version 2 for this.
+> 
+> **Optimizing constraints**
+> 
+> I need to focus on optimizing my constraints without increasing the overall limits. It seems that working with a covering design of arity reduced to 10 could yield better results, while keeping in mind the need for local reduction. I’m using 9 groups with a total of 36 constraints, and I want to raise that total significantly with new designs. I should also consider alternatives like automorphism to manage reverse definitions effectively without compromising injectivity.
+> 
+> **Analyzing constraints and updates**
+> 
+> I’m exploring the relationship between old and new values when old equals b, which could result in duplication if not careful. I find myself considering local swap invariants while reducing the constraint number or arity. Using an integer division product to simplify constraints seems like a potential solution. Maybe I can update the formula to output an adjusted new value based on specific conditions involving old and a. Still, handling tuples and domains could get complicated, especially with growing constraints.
+> 
+> **Refining combinatorial strategies**
+> 
+> I’m looking to improve my approach and eliminate any loopholes that might arise from using tables. My goal is to optimize maximum arity by using advanced combinatorial covering within the existing 36 blocks, ensuring the total remains under 664. I wonder if I can cover all pairs effectively across 83 points in those blocks. My calculations show that covering 45 pairs in 36 blocks could lead to overextending limitations, so I might need at least 76 blocks to reach a maximum of 10.
+
+**Можно уменьшить размер явно записанных доменов ограничений втрое, не увеличивая остальные перечисленные параметры.** Для этого достаточно одной локальной замены в текущей v2.
+
+Здесь размер доменов измеряю **как в вашем `_v2_stats`: числом границ в `linear.domain`, то есть `rhs_endpoints`, до presolve**. Доменов переменных замена вообще не касается. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/deck_server_reduced_v2.py))
+
+## 1. Замена
+
+Обозначения для одного обновления:
+
+- `a` — позиция выбранной карты;
+- `b = (a + d) % n`;
+- `old` — прежняя позиция другой карты;
+- `new` — её новая позиция;
+- `hit` — попадание этой карты в позицию `b`.
+
+В v2 соответствующий блок задаёт:
+
+\[
+\begin{aligned}
+hit&\Rightarrow old=b,\\
+\neg hit&\Rightarrow old\ne b,\\
+new&=\operatorname{if}(hit,a,old).
+\end{aligned}
+\]
+
+Второе условие записывается через двухинтервальный домен разности. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/deck_server_reduced_v2.py))
+
+**Предлагаю заменить только второе условие:**
+
+\[
+\boxed{\neg hit\Rightarrow old\ne b
+\quad\longrightarrow\quad
+\operatorname{AllDifferent}(new,b).}
+\]
+
+Именно бинарный `AllDifferent`, а не `model.add(new != b)`: `AllDifferent` записывается без поля числового домена. Его смысл для двух аргументов — их неравенство. ([raw.githubusercontent.com](https://raw.githubusercontent.com/google/or-tools/stable/ortools/sat/cp_model.proto))
+
+### Почему это корректно
+
+В динамической ветви \(0<d<n\), поэтому \(a\ne b\).
+
+- Если `hit = true`, то `new = a`, следовательно, `new ≠ b` автоматически.
+- Если `hit = false`, то `new = old`, поэтому `new ≠ b` равносильно исходному `old ≠ b`.
+
+Таким образом, это **эквивалентность на тех же переменных**, а не только сохранение SAT/UNSAT.
+
+## 2. Что изменить в Python
+
+Внутри `_v2_build_model` удалите:
+
+```python
+model.add_linear_expression_in_domain(
+    old - b, nonzero_difference
+).only_enforce_if(hit.Not())
+```
+
+После существующего вызова `_v2_add_mux` добавьте:
+
+```python
+model.add_all_different([new, b])
+```
+
+Остальной код, включая положительное определение `hit`, modulo, окна, начальную различность и счётчик `updates`, остаётся прежним.
+
+Чтобы гарантировать подсчёт ресурсов при сохранении `first_edges`, перед построением модели добавьте проверку:
+
+```python
+heads = [row[0] for row in messages if row]
+if len(heads) != len(set(heads)):
+    raise ValueError("Для этой замены первые карты сообщений должны различаться")
+```
+
+В присланном CSV первые карты действительно различны:
+
+```text
+50, 80, 36, 76, 63, 34, 27, 77, 33
+```
+
+Поэтому кеширование первого `hit` между сообщениями здесь не происходит. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/data.csv))
+
+## 3. Гарантированный выигрыш
+
+Пусть \(E>0\) — число блоков обновления других карт.
+
+Для одного блока:
+
+| Параметр | v2 | После замены |
+|---|---:|---:|
+| Переменные | 2 | 2 |
+| Ограничения | 3 | 3 |
+| Суммарная арность, включая enforcement | \(3+3+4=10\) | \(3+2+4=9\) |
+| Максимальная арность блока | 4 | 4 |
+| Число записанных коэффициентов | 4 | 4 |
+| Максимальный модуль коэффициента | 1 | 1 |
+| Границы числовых доменов | \(2+4=6\) | 2 |
+
+`Element`-mux остаётся прежним; отрицательное рефицированное линейное ограничение заменяется бинарным `AllDifferent`. Форматы этих ограничений и коэффициентов заданы в protobuf OR-Tools. ([raw.githubusercontent.com](https://raw.githubusercontent.com/google/or-tools/stable/ortools/sat/cp_model.proto))
+
+Следовательно, для всей полностью построенной динамической модели:
+
+\[
+\boxed{
+\begin{aligned}
+V_{\rm new}&=V_{\rm old},\\
+C_{\rm new}&=C_{\rm old},\\
+A_{\rm new}&=A_{\rm old}-E,\\
+M_{\rm new}&=M_{\rm old},\\
+F_{\rm new}&=F_{\rm old},\\
+D_{\rm new}&=\frac{D_{\rm old}}3.
+\end{aligned}}
+\]
+
+Домены переменных остаются идентичными. Максимальное число интервалов в явно записанном линейном домене также уменьшается с двух до одного.
+
+**Условие задачи выполнено:** один параметр уменьшается втрое, остальные не увеличиваются.
+
+При `d = 0` обновления в исходной модели пропускаются; при раннем возврате короткого UNSAT-моделя заменяемых блоков тоже нет. Такие ветви остаются неизменными — там нельзя получить положительный выигрыш на уже отсутствующих доменах. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/deck_server_reduced_v2.py))
+
+## 4. Доказательство на Lean
+
+Ниже формализованы:
+
+1. исходный двухинтервальный домен;
+2. факт \(a\ne(a+d)\bmod n\);
+3. эквивалентность одного блока;
+4. эквивалентность произвольного семейства блоков в неизменном окружении;
+5. сохранение выполнимости;
+6. арифметический сертификат ресурсов.
+
+Используемые леммы целочисленного остатка — `Int.emod_eq_of_lt` и `Int.sub_emod_right`. ([leanprover-community.github.io](https://leanprover-community.github.io/mathlib4_docs/Init/Data/Int/DivMod/Lemmas.html))
+
+**Код не содержит `sorry` или добавленных аксиом. Я не запускал Lean в этой сессии, поэтому не выдаю его за проверенный здесь результат компиляции.**
+
+Файл `DeckReduceV3.lean`:
+
+```lean
+import Mathlib
+
+namespace DeckReduceV3
+
+-- Домен позиционной переменной: 0 .. n-1.
+def Pos (n x : ℤ) : Prop :=
+  0 ≤ x ∧ x < n
+
+-- Исходный nonzero_difference:
+-- [-(n-1), -1] ∪ [1, n-1].
+def NonzeroDomain (n z : ℤ) : Prop :=
+  (1 - n ≤ z ∧ z ≤ -1) ∨
+  (1 ≤ z ∧ z ≤ n - 1)
+
+theorem nonzeroDomain_iff
+    {n x b : ℤ}
+    (hx : Pos n x)
+    (hb : Pos n b) :
+    NonzeroDomain n (x - b) ↔ x ≠ b := by
+  dsimp [Pos] at hx hb
+  dsimp [NonzeroDomain]
+  omega
+
+-- При нормализованном ненулевом d перенос не является тождественным.
+theorem moved_ne
+    {n a d : ℤ}
+    (ha : Pos n a)
+    (hd : 0 < d ∧ d < n) :
+    a ≠ (a + d) % n := by
+  rcases ha with ⟨ha0, han⟩
+  rcases hd with ⟨hd0, hdn⟩
+  by_cases h : a + d < n
+  · have h0 : 0 ≤ a + d := by omega
+    rw [Int.emod_eq_of_lt h0 h]
+    omega
+  · have h0 : 0 ≤ a + d - n := by omega
+    have hlt : a + d - n < n := by omega
+    have hm : (a + d) % n = a + d - n := by
+      rw [← Int.sub_emod_right (a + d) n]
+      exact Int.emod_eq_of_lt h0 hlt
+    rw [hm]
+    omega
+
+structure Block where
+  a   : ℤ
+  b   : ℤ
+  old : ℤ
+  new : ℤ
+  hit : Bool
+
+-- Семантика исходных трёх ограничений.
+def OldBlock (n : ℤ) (q : Block) : Prop :=
+  (q.hit = true → q.old = q.b) ∧
+  (q.hit = false →
+    NonzeroDomain n (q.old - q.b)) ∧
+  q.new = (if q.hit then q.a else q.old)
+
+-- Семантика нового блока:
+-- положительное определение hit,
+-- прежний Element,
+-- AllDifferent([new, b]).
+def NewBlock (q : Block) : Prop :=
+  (q.hit = true → q.old = q.b) ∧
+  q.new = (if q.hit then q.a else q.old) ∧
+  q.new ≠ q.b
+
+theorem block_equiv
+    {n : ℤ}
+    {q : Block}
+    (hx : Pos n q.old)
+    (hb : Pos n q.b)
+    (hab : q.a ≠ q.b) :
+    OldBlock n q ↔ NewBlock q := by
+  constructor
+  · rintro ⟨hpos, hneg, hy⟩
+    refine ⟨hpos, hy, ?_⟩
+    cases hh : q.hit with
+    | false =>
+        have hxb : q.old ≠ q.b :=
+          (nonzeroDomain_iff hx hb).mp (hneg hh)
+        have hyx : q.new = q.old := by
+          simpa [hh] using hy
+        intro h
+        exact hxb (hyx.symm.trans h)
+    | true =>
+        have hya : q.new = q.a := by
+          simpa [hh] using hy
+        intro h
+        exact hab (hya.symm.trans h)
+  · rintro ⟨hpos, hy, hnb⟩
+    refine ⟨hpos, ?_, hy⟩
+    intro hh
+    have hyx : q.new = q.old := by
+      simpa [hh] using hy
+    apply (nonzeroDomain_iff hx hb).mpr
+    intro hxb
+    exact hnb (hyx.trans hxb)
+
+-- Условия, уже обеспеченные неизменной частью модели.
+def Safe (n d : ℤ) (q : Block) : Prop :=
+  Pos n q.a ∧
+  Pos n q.b ∧
+  Pos n q.old ∧
+  q.b = (q.a + d) % n
+
+-- rest содержит всё, что не заменяется:
+-- домены переменных, modulo, окна, initial distinct и т.д.
+theorem frame_equiv
+    {I : Type*}
+    (n d : ℤ)
+    (qs : I → Block)
+    (rest : Prop)
+    (hd : 0 < d ∧ d < n)
+    (hrest : rest → ∀ i, Safe n d (qs i)) :
+    (rest ∧ ∀ i, OldBlock n (qs i)) ↔
+    (rest ∧ ∀ i, NewBlock (qs i)) := by
+  have hlocal :
+      rest → ∀ i,
+        OldBlock n (qs i) ↔ NewBlock (qs i) := by
+    intro hr i
+    rcases hrest hr i with ⟨ha, hb, hx, hm⟩
+    have hab : (qs i).a ≠ (qs i).b := by
+      rw [hm]
+      exact moved_ne ha hd
+    exact block_equiv hx hb hab
+  constructor
+  · rintro ⟨hr, hs⟩
+    exact ⟨hr, fun i => (hlocal hr i).mp (hs i)⟩
+  · rintro ⟨hr, hs⟩
+    exact ⟨hr, fun i => (hlocal hr i).mpr (hs i)⟩
+
+-- S может быть типом полных присваиваний всем переменным модели.
+theorem sat_equiv
+    {S I : Type*}
+    (n d : ℤ)
+    (qs : S → I → Block)
+    (rest : S → Prop)
+    (hd : 0 < d ∧ d < n)
+    (hrest : ∀ s, rest s → ∀ i, Safe n d (qs s i)) :
+    (∃ s, rest s ∧ ∀ i, OldBlock n (qs s i)) ↔
+    (∃ s, rest s ∧ ∀ i, NewBlock (qs s i)) := by
+  constructor
+  · rintro ⟨s, hs⟩
+    exact ⟨s,
+      (frame_equiv n d (qs s) (rest s) hd (hrest s)).mp hs⟩
+  · rintro ⟨s, hs⟩
+    exact ⟨s,
+      (frame_equiv n d (qs s) (rest s) hd (hrest s)).mpr hs⟩
+
+structure Metrics where
+  variables          : ℕ
+  constraints        : ℕ
+  totalArity         : ℕ
+  maxArity           : ℕ
+  coefficientEntries : ℕ
+  maxCoefficient     : ℕ
+  rhsEndpoints       : ℕ
+
+-- t: число modulo-ограничений.
+-- e: число обновлений; первые карты сообщений различны.
+-- c0, a0: ресурсы неизменного initial distinct.
+-- m: общая максимальная арность, сохраняемая заменой.
+def oldMetrics
+    (n t e c0 a0 m : ℕ) : Metrics :=
+  ⟨n + t + 2 * e,
+   c0 + t + 3 * e,
+   a0 + 2 * t + 10 * e,
+   m,
+   a0 + 2 * t + 4 * e,
+   1,
+   6 * e⟩
+
+def newMetrics
+    (n t e c0 a0 m : ℕ) : Metrics :=
+  ⟨n + t + 2 * e,
+   c0 + t + 3 * e,
+   a0 + 2 * t + 9 * e,
+   m,
+   a0 + 2 * t + 4 * e,
+   1,
+   2 * e⟩
+
+def NoIncrease (u v : Metrics) : Prop :=
+  u.variables ≤ v.variables ∧
+  u.constraints ≤ v.constraints ∧
+  u.totalArity ≤ v.totalArity ∧
+  u.maxArity ≤ v.maxArity ∧
+  u.coefficientEntries ≤ v.coefficientEntries ∧
+  u.maxCoefficient ≤ v.maxCoefficient ∧
+  u.rhsEndpoints ≤ v.rhsEndpoints
+
+theorem resource_certificate
+    (n t e c0 a0 m : ℕ) :
+    NoIncrease
+      (newMetrics n t e c0 a0 m)
+      (oldMetrics n t e c0 a0 m) ∧
+    (newMetrics n t e c0 a0 m).totalArity + e =
+      (oldMetrics n t e c0 a0 m).totalArity ∧
+    3 * (newMetrics n t e c0 a0 m).rhsEndpoints =
+      (oldMetrics n t e c0 a0 m).rhsEndpoints ∧
+    2 * (newMetrics n t e c0 a0 m).rhsEndpoints ≤
+      (oldMetrics n t e c0 a0 m).rhsEndpoints := by
+  dsimp [NoIncrease, oldMetrics, newMetrics]
+  omega
+
+end DeckReduceV3
+```
+
+Проверка в Mathlib-проекте:
+
+```bash
+lake env lean DeckReduceV3.lean
+```
+
+`frame_equiv` доказывает замену при неизменных остальных ограничениях. Это не формализация Python-интерпретатора или реализации CP-SAT.
+
+## 5. Проверка фактического protobuf
+
+Сохраните исправленный скрипт отдельно как `deck_server_reduced_v3.py`. Следующий аудит проверяет показатели непосредственно на построенных моделях, **без запуска решателя**:
+
+```python
+import deck_server_reduced_v2 as v2
+import deck_server_reduced_v3 as v3
+
+
+def audit(messages, n, d, s, k):
+    old, p_old, out_old = v2.build_model(
+        messages, n, d, s, k, lambda: None
+    )
+    new, p_new, out_new = v3.build_model(
+        messages, n, d, s, k, lambda: None
+    )
+
+    assert not old.validate()
+    assert not new.validate()
+
+    po = v2._reduced_proto(old)
+    pn = v3._reduced_proto(new)
+
+    before = v2._v2_stats(po)
+    after = v3._v2_stats(pn)
+
+    # Переменные, их домены и выходные индексы не изменены.
+    assert [list(v.domain) for v in po.variables] == [
+        list(v.domain) for v in pn.variables
+    ]
+    assert p_old == p_new
+    assert out_old == out_new
+
+    # Ни один показатель исходного аудитора не увеличился.
+    assert all(after[key] <= before[key] for key in before)
+
+    e = sum(
+        c.WhichOneof("constraint") == "element"
+        for c in po.constraints
+    )
+
+    assert after["variables"] == before["variables"]
+    assert after["constraints"] == before["constraints"]
+    assert after["max_arity"] == before["max_arity"]
+    assert after["coefficient_entries"] == before["coefficient_entries"]
+    assert after["max_coefficient"] == before["max_coefficient"]
+
+    assert after["total_arity"] + e == before["total_arity"]
+    assert 3 * after["rhs_endpoints"] == before["rhs_endpoints"]
+
+    print("E =", e)
+    print("v2:", before)
+    print("v3:", after)
+```
+
+Ваше ограничение на `K`, отсутствие соседних дублей и использование всех карт **не меняются**. Локальная эквивалентность даже не требует отсутствия соседних дублей.
+
+**Итог: `rhs_endpoints` уменьшается ровно в 3 раза, суммарная арность — на \(E\); остальные показатели сохраняются.** Это сокращение входной модели, а не обещание трёхкратного ускорения CP-SAT.
