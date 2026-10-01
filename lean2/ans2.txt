@@ -1,0 +1,401 @@
+*Thinking...*
+
+> **Interpreting user task**
+> 
+> I'm analyzing a request to optimize a CP-SAT script for a Russian user, focusing on Lean code. It looks like I need to fetch data sources using only web resources, as I don't have access to Python tools or a filesystem here. I should probably pay attention to how to analyze an extensive script carefully. The goal seems to involve creating code artifacts with Lean proofs, ensuring mathematical optimization without increasing metrics. I need to read up on this formally.
+> 
+> **Analyzing patch source requirements**
+> 
+> I need to adapt the legacy tests based on the new patch source, specifically looking at the expected element count of 301 and the stats coefficient declining from 1266 to 1264.  
+> 
+> I see that `_v2_selftest` expects the new statistics to meet the same constraints. However, there's a failure in element count that I need to address. Am I able to clarify `_v3_selftest` constraints from the source? It seems like I need to get a complete read on the self-test to understand all requirements.
+> 
+> **Evaluating proof strategies**
+> 
+> I'm considering using the Bool proof with two lines along with universal model and projected six lines. It seems the general metric certificate might not need `omega` if it’s numerical decide. I also think about the table properties theorem concerning `noGrowth` and how tuples in fields relate to inferred natural proofs. However, the table proof appears to lack a mechanical link to the counter code, which affects the honesty link verifier.
+> 
+> **Evaluating proof reduction in Lean**
+> 
+> I’m considering how default proof reduction and recursion work in Lean, particularly focusing on the Nat type. It seems that `nat.decLe` efficiently handles comparisons of primitive natural numbers. I'll think about how the kernel operates with this and whether it achieves O(1) efficiency, as suggested. It feels reassuring to know that the recursion and reduction strategies are designed to be effective in practice. I'll explore this further to ensure I'm on the right track.
+
+**Да. Можно ещё раз уменьшить два показателя:**
+- количество явно записанных коэффициентов — **в 2,383 раза на вашем CSV**;
+- количество концов доменов линейных ограничений — **до нуля**.
+
+Остальные перечисленные показатели не увеличиваются. Ниже — замена, доказательство её эквивалентности на Lean и генератор исправленного скрипта.
+
+**Важно:** речь именно о метриках **входного protobuf до presolve**, которые считает ваш `_v2_stats`, а не о гарантированном ускорении поиска. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean2/deck_server_reduced_v3))
+
+## 1. Что заменить
+
+В `_v3_build_model` сейчас положительное направление определения `hit` записано так:
+
+```python
+model.add(before == b).only_enforce_if(hit)
+```
+
+Заменить его на:
+
+```python
+_v2_add_mux(model, hit, b, before, b)
+```
+
+Это записывает ограничение
+
+\[
+b=[b,\ before]_{hit}.
+\]
+
+По определению `Element`, выбранная индексом величина должна быть равна target. Поэтому: ([raw.githubusercontent.com](https://raw.githubusercontent.com/google/or-tools/v9.15/ortools/sat/python/cp_model.py))
+
+- `hit = 0`: получаем `b = b`, то есть никаких дополнительных требований;
+- `hit = 1`: получаем `before = b`.
+
+Таким образом,
+
+\[
+(hit=1\Rightarrow before=b)
+\quad\Longleftrightarrow\quad
+Element(hit,[b,before],b).
+\]
+
+**Не удаляется ни одно направление определения `hit`.** Все остальные ограничения v3 остаются без изменений.
+
+### Почему показатели не растут
+
+У заменяемого ограничения и у нового ограничения один и тот же набор переменных:
+
+\[
+\{hit,\ before,\ b\}.
+\]
+
+Повторение `b` в массиве и в target **не добавляет переменную и не увеличивает арность**, если считать различные ссылки, как в вашем измерителе.
+
+На одну замену:
+
+| Показатель | Было | Стало |
+|---|---:|---:|
+| Переменные | те же | те же |
+| Ограничения | 1 | 1 |
+| Арность | 3 | 3 |
+| Явные коэффициенты | 2 | 0 |
+| Концы линейного домена | 2 | 0 |
+
+**Здесь принципиально использовать `_v2_add_mux`, который записывает компактный legacy `Element`.** Обычный `model.add_element(...)` с новым форматом линейных выражений не обеспечивает этой экономии коэффициентов. В protobuf OR-Tools 9.15 оба формата предусмотрены; смешивать их нельзя. ([raw.githubusercontent.com](https://raw.githubusercontent.com/google/or-tools/v9.15/ortools/sat/cp_model.proto))
+
+## 2. Результат для вашего CSV
+
+Для полной динамической ветви `D ≠ 0`:
+
+- \(R=1027\) — число созданных ограничений modulo;
+- \(E=L=39287\);
+- \(T=38260\);
+- \(F=13095\);
+- начальное покрытие: 861 ограничение, суммарная арность 3403.
+
+Количество переходов \(R\) получается из длин сообщений CSV; остальные четыре счётчика совпадают с вашим журналом. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/data.csv))
+
+**Ниже аналитический расчёт, а не результат запущенного здесь теста.**
+
+| Показатель | **v3** | **После замены** |
+|---|---:|---:|
+| Число переменных | 79 684 | 79 684 |
+| Число ограничений | 93 557 | 93 557 |
+| Суммарная арность | 331 821 | 331 821 |
+| Максимальная арность | 4 | 4 |
+| Количество коэффициентов | **135 386** | **56 812** |
+| Максимальный модуль коэффициента | 1 | 1 |
+| Концы линейных доменов | **78 574** | **0** |
+
+Расчёт коэффициентов:
+
+\[
+C_3=2R+2L+(T+F)+3403=135386,
+\]
+
+\[
+C_4=2R+(T+F)+3403=56812.
+\]
+
+Следовательно,
+
+\[
+2C_4=113624<135386=C_3.
+\]
+
+Условие «ещё минимум в два раза» выполнено даже без использования перехода доменов к нулю.
+
+Домены **самих переменных** сохраняются буквально. Дополнительные предположения о соседних дублях и префиксах для корректности этой замены не нужны.
+
+## 3. Доказательство на Lean
+
+Сохраните как `GuardElement.lean`.
+
+Доказательство охватывает:
+1. локальную замену;
+2. её применение к произвольному числу ограничений в произвольной остальной модели;
+3. сохранение любых проекций решений — например, начальной колоды и выходной трассы;
+4. численные неравенства из таблицы.
+
+Здесь `rest` содержит **всю неизменяемую часть модели**, включая окна, modulo, исходные ограничения различности и остальные связи.
+
+```lean
+import Lean
+
+namespace GuardElement
+
+-- hit : Bool точно представляет существующую переменную
+-- с доменом {0, 1}. Новая переменная не вводится.
+def Element2 {α : Type}
+    (hit : Bool) (lo hi target : α) : Prop :=
+  (if hit = true then hi else lo) = target
+
+-- Локальная эквивалентность.
+theorem guard_iff_element {α : Type}
+    (hit : Bool) (before b : α) :
+    (hit = true → before = b) ↔
+      Element2 hit b before b := by
+  cases hit <;> simp [Element2]
+
+variable {State Index : Type}
+
+-- Полное присваивание всем переменным представлено State.
+-- Index перечисляет заменяемые ограничения.
+def Model3
+    (rest : State → Prop)
+    (hit : State → Index → Bool)
+    (before b : State → Index → Int)
+    (s : State) : Prop :=
+  rest s ∧
+    ∀ i, hit s i = true → before s i = b s i
+
+def Model4
+    (rest : State → Prop)
+    (hit : State → Index → Bool)
+    (before b : State → Index → Int)
+    (s : State) : Prop :=
+  rest s ∧
+    ∀ i, Element2 (hit s i) (b s i) (before s i) (b s i)
+
+-- Совпадают все полные присваивания, а не только SAT/UNSAT.
+theorem models_equivalent
+    (rest : State → Prop)
+    (hit : State → Index → Bool)
+    (before b : State → Index → Int)
+    (s : State) :
+    Model3 rest hit before b s ↔
+      Model4 rest hit before b s := by
+  simp only [Model3, Model4, guard_iff_element]
+
+-- Сохраняются любые наблюдаемые результаты.
+theorem same_projection {Output : Type}
+    (rest : State → Prop)
+    (hit : State → Index → Bool)
+    (before b : State → Index → Int)
+    (observe : State → Output)
+    (output : Output) :
+    (∃ s, Model3 rest hit before b s ∧ observe s = output) ↔
+      (∃ s, Model4 rest hit before b s ∧ observe s = output) := by
+  constructor
+  · intro h
+    rcases h with ⟨s, hs, hout⟩
+    exact ⟨s, (models_equivalent rest hit before b s).mp hs, hout⟩
+  · intro h
+    rcases h with ⟨s, hs, hout⟩
+    exact ⟨s, (models_equivalent rest hit before b s).mpr hs, hout⟩
+
+structure Metrics where
+  variables : Nat
+  constraints : Nat
+  totalArity : Nat
+  maxArity : Nat
+  coefficientEntries : Nat
+  maxCoefficient : Nat
+  rhsEndpoints : Nat
+
+def NoGrowth (old new : Metrics) : Prop :=
+  new.variables ≤ old.variables ∧
+  new.constraints ≤ old.constraints ∧
+  new.totalArity ≤ old.totalArity ∧
+  new.maxArity ≤ old.maxArity ∧
+  new.coefficientEntries ≤ old.coefficientEntries ∧
+  new.maxCoefficient ≤ old.maxCoefficient ∧
+  new.rhsEndpoints ≤ old.rhsEndpoints
+
+def csv3 : Metrics where
+  variables := 83 + 1027 + 39287 + 39287
+  constraints := 1027 + 39287 + 39287 + 13095 + 861
+  totalArity := 2 * 1027 + 4 * 39287 + 3 * 39287
+    + 38260 + 13095 + 3403
+  maxArity := 4
+  coefficientEntries := 2 * 1027 + 2 * 39287
+    + 38260 + 13095 + 3403
+  maxCoefficient := 1
+  rhsEndpoints := 2 * 39287
+
+def csv4 : Metrics :=
+  { csv3 with
+    coefficientEntries := 2 * 1027 + 38260 + 13095 + 3403
+    rhsEndpoints := 0 }
+
+theorem csv_goal :
+    NoGrowth csv3 csv4 ∧
+    2 * csv4.coefficientEntries ≤ csv3.coefficientEntries ∧
+    2 * csv4.rhsEndpoints ≤ csv3.rhsEndpoints := by
+  decide
+
+#print axioms guard_iff_element
+#print axioms models_equivalent
+#print axioms same_projection
+#print axioms csv_goal
+
+end GuardElement
+```
+
+Это доказательство **корректности оптимизации относительно v3**, а не независимая формализация всего сервера и внутренностей OR-Tools. В коде нет `sorry`, дополнительных деклараций `axiom` или `native_decide`; используются стандартные средства Lean. ([lean-lang.org](https://lean-lang.org/doc/reference/latest/Tactic-Proofs/Tactic-Reference/))
+
+Проверка:
+
+```powershell
+lean GuardElement.lean
+```
+
+## 4. Генератор v4 и проверка фактического protobuf
+
+Нельзя ограничиться заменой одной строки: два существующих selftest ожидают старое число `Element` и старое соотношение линейных доменов. Их ожидания также нужно обновить.
+
+Следующий скрипт:
+
+- **не изменяет v3**;
+- создаёт `deck_server_reduced_v4.py`;
+- назначает отдельную версию модели и маркер рабочей копии;
+- сравнивает **настоящие v3 и v4**, а не v2 и v4;
+- проверяет идентичность переменных, доменов и выходных индексов;
+- проверяет каждое изменённое ограничение;
+- проверяет все показатели;
+- запускает обновлённые штатные selftest.
+
+Сохраните как `make_v4.py` рядом с `deck_server_reduced_v3.py` и `data.csv`.
+
+```python
+from pathlib import Path
+import importlib.util
+import subprocess
+import sys
+
+
+def require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
+root = Path(__file__).resolve().parent
+source = root / "deck_server_reduced_v3.py"
+destination = root / "deck_server_reduced_v4.py"
+
+text = source.read_text(encoding="utf-8-sig")
+
+edits = [
+    (
+        "model.add(before == b).only_enforce_if(hit)",
+        "_v2_add_mux(model, hit, b, before, b)",
+    ),
+    (
+        "len(elements) == 300",
+        "len(elements) == 301",
+    ),
+    (
+        '3 * new_stats["rhs_endpoints"] == old_stats["rhs_endpoints"]',
+        'new_stats["rhs_endpoints"] == 0',
+    ),
+    (
+        "deck-reduced/hybrid-small4/v3",
+        "deck-reduced/element-guards/v4",
+    ),
+    (
+        ".deck_hybrid_copy_v3.json",
+        ".deck_element_guards_copy_v4.json",
+    ),
+    (
+        '"_hybrid_v3"',
+        '"_element_guards_v4"',
+    ),
+    (
+        "SELFTEST V3 OK",
+        "SELFTEST V4 OK",
+    ),
+    (
+        "HYBRID SMALL4 v3",
+        "ELEMENT GUARDS v4",
+    ),
+]
+
+for old, new in edits:
+    require(
+        text.count(old) == 1,
+        f"Ожидалось одно вхождение: {old!r}",
+    )
+    text = text.replace(old, new, 1)
+
+compile(text, str(destination), "exec")
+
+if destination.exists():
+    require(
+        destination.read_text(encoding="utf-8") == text,
+        "Существующая v4 отличается; файл не перезаписан",
+    )
+else:
+    destination.write_text(text, encoding="utf-8")
+
+
+def load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    require(spec is not None and spec.loader is not None, str(path))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+v3 = load_module("deck_verified_v3", source)
+v4 = load_module("deck_verified_v4", destination)
+
+_, n, messages, _ = v3.read_data_csv(root / "data.csv")
+
+require(n == 83, "Этот численный сертификат рассчитан для N=83")
+require(all(messages), "Ожидались непустые сообщения")
+require(
+    len({row[0] for row in messages}) == len(messages),
+    "Первые карты сообщений должны быть различны",
+)
+require(
+    all(
+        a != b
+        for row in messages
+        for a, b in zip(row, row[1:])
+    ),
+    "Найден соседний дубль",
+)
+require(
+    v3._v3_counts(messages) == (39287, 39287, 38260, 13095),
+    "CSV отличается от указанного набора данных",
+)
+require(
+    sum(len(row) - 1 for row in messages) == 1027,
+    "Не совпало число переходов",
+)
+
+# Только построение моделей; тяжёлый поиск на CSV не запускается.
+# Эта конфигурация удовлетворяет INPUT_RULE.
+args = (messages, n, 41, 0, 41, lambda: None)
+
+m3, initial3, output3 = v3.build_model(*args)
+m4, initial4, output4 = v4.build_model(*args)
+
+require(not m3.validate(), "MODEL_INVALID у v3")
+require(not m4.validate(), "MODEL_INVALID у v4")
+require(initial3 == initial4, "Изменились начальные индексы")
+require(output3 == output4, "Изменились выходные индексы")
+
+p3 = v3._reduced_proto(m3)
+p4 = v4._re
