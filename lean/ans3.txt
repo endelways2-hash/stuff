@@ -1,0 +1,727 @@
+*Thinking...*
+
+> **Analyzing constraints**
+> 
+> I'm considering the need to save constraints while handling a new case, which has a threshold of 100. It seems that even a pure decrease in arity can lead to a significant reduction in E, around tens of thousands, yet the constraints set at 100 are still failing. This situation is puzzling because I thought that changing the arity would help, but it doesn't seem to be enough. Let's explore this further!
+> 
+> **Exploring logical constraints**
+> 
+> There's an approach to cover maxarity that involves using pairwise inequalities along with exact duplicate logical clauses. By removing enough C through the 'bool_or' family of constraints, I can collapse them into `at_most_one`. This sounds a bit technical but seems like it could help simplify the problem. I’m curious about how effective this method will be, and if it can truly streamline things! Let's see how it goes.
+> 
+> **Calculating data lengths**
+> 
+> I'm working through a calculation involving a data sum. I have a few lengths to add: 99, 103, 118, 102, 137, 124, 119, 120, and 114. Adding these gives a total of 1,036. 
+> 
+> I also need to compute B based on some conditions, and then consider the updates over time related to distinct cards remaining. There's a thought about running a Python script to help calculate metrics since I can't execute it directly. I'm aiming to prove some thresholds based on message lengths.
+> 
+> **Considering code guidelines**
+> 
+> I've got a solid plan here but there's some potential uncertainty regarding the current module. I need to make sure that the code patch doesn't exceed 200 words, and I can't copy more than 25 words from any non-lyrical source. Also, I should verify if the source code is linked, possibly through GitHub, and check the user-provided license. There are definitely a few steps to ensure I stay within the guidelines!
+
+Да. Здесь можно сделать **максимальную арность \(20\to4\), то есть уменьшить её в 5 раз**, не увеличивая остальные перечисленные параметры. Дополнительно число концов доменов линейных ограничений уменьшается в 3 раза.
+
+Ниже — конструкция, расчёт размеров и Lean-код. **Lean в этом интерфейсе я запустить не могу**, поэтому не буду приписывать коду выдуманный успешный прогон. Даю также генератор проверяемого сертификата непосредственно из вашего CSV.
+
+## 1. Что меняем
+
+В CSV — 83 карты и 9 сообщений с различными первыми картами. В частности, кеширование `first_edges` не разделяет Boolean-переменные между первыми шагами этих сообщений. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/data.csv))
+
+Метрики считаю, как в вашем `_v2_stats`: **по входному protobuf, до presolve**, включая enforcement literals в арность. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/deck_server_reduced_v2.py))
+
+### А. Замена отрицательных импликаций
+
+Обозначим:
+
+- \(a\) — позиция выдаваемой карты;
+- \(b=(a+D)\bmod83\);
+- \(x_i\) — старая позиция другой ещё нужной карты;
+- \(h_i\) — `hit`;
+- \(y_i\) — её новая позиция.
+
+Вместо тройки
+
+\[
+h_i\Rightarrow x_i=b,\qquad
+\neg h_i\Rightarrow x_i\ne b,\qquad
+y_i=\operatorname{Element}(h_i,[x_i,a])
+\]
+
+оставляем **первую импликацию и Element**, а отрицательные импликации заменяем следующим образом:
+
+1. разбиваем **новые позиции** \(y_i\) на группы максимум по 3;
+2. для каждой группы добавляем
+   \[
+   \operatorname{AllDifferent}(b,y_{i_1},y_{i_2},y_{i_3}).
+   \]
+
+Используются обычные `Element` и `AllDifferent`, без таблиц допустимых кортежей или нового типа ограничения. Их семантика соответствует указанным равенствам и попарной различности. ([raw.githubusercontent.com](https://raw.githubusercontent.com/google/or-tools/v9.15/ortools/sat/cp_model.proto))
+
+**Почему это корректно:**
+
+- Новые AllDifferent дают \(y_i\ne b\).
+- Если \(x_i=b\), но \(h_i=0\), Element даст \(y_i=x_i=b\): противоречие.
+- Следовательно, восстановлено и второе направление определения `hit`.
+- Дополнительная различность \(y_i\) внутри каждой группы не исключает правильных решений: позиции различных карт остаются различными после перестановки.
+
+Последний пункт доказывается индукцией от начальной различности позиций. Ниже это сделано в `trace_iff`, а не оставлено предположением для каждого шага.
+
+**Важно:** \(b\) включается в эти AllDifferent **даже если выдаваемая карта больше не используется**.
+
+### Б. Начальная различность с арностью не больше 4
+
+Разбиваем индексы начальных переменных на 42 группы:
+
+\[
+G_g=\{i<83\mid i\bmod42=g\}.
+\]
+
+Каждая группа имеет размер не больше 2. Для каждой пары \(g<h\) добавляем
+
+\[
+\operatorname{AllDifferent}(P_i:i\in G_g\cup G_h).
+\]
+
+Получается:
+
+- 861 ограничение;
+- суммарная арность 3403;
+- максимальная арность 4.
+
+Каждая пара карт покрыта: карты либо находятся в разных группах, либо их общую группу можно объединить с любой другой.
+
+**Само по себе такое дробление увеличило бы число ограничений и суммарную арность. Экономия из пункта А оплачивает это увеличение.**
+
+## 2. Все метрики
+
+Для динамической ветки \(D\ne0\) определим:
+
+- \(B\) — число `int_mod`;
+- \(E\) — число обновлений других карт;
+- \(m_t\) — число таких обновлений на конкретном шаге;
+- \(F=\sum_t\lceil m_t/3\rceil\) — число новых пошаговых AllDifferent.
+
+Следующие формулы — расчёт по структуре ограничений. Element сохраняется в вашем компактном формате.
+
+| Метрика | v2 | Предлагаемая v3 |
+|---|---:|---:|
+| Переменные | \(83+B+2E\) | \(83+B+2E\) |
+| Ограничения | \(B+3E+36\) | \(B+2E+F+861\) |
+| Суммарная арность | \(2B+10E+664\) | \(2B+8E+F+3403\) |
+| **Максимальная арность** | **20** | **4** |
+| Число коэффициентов | \(2B+4E+664\) | \(2B+3E+F+3403\) |
+| Максимальный модуль коэффициента | 1 | 1 |
+| Концы доменов линейных ограничений | \(6E\) | \(2E\) |
+
+Достаточно проверить единственное бюджетное условие:
+
+\[
+\boxed{F+2739\le E.}
+\]
+
+Тогда:
+
+- число ограничений не увеличивается;
+- суммарная арность не увеличивается;
+- даже **количество коэффициентов**, а не только их величина, не увеличивается;
+- максимальная арность уменьшается в 5 раз.
+
+**Домены переменных в динамической ветке остаются буквально прежними.** \(K\), окна допустимых позиций, модуль 83 и ограничения на \(D,S,K\) не меняются. Из линейных ограничений удаляются домены неравенств; новые линейные домены не вводятся.
+
+Генератор ниже заставляет Lean проверить бюджетное условие на **всех данных CSV**, а не на выборке или синтетическом тесте.
+
+### Отдельно \(D=0\)
+
+Для вашего CSV эта ветка UNSAT: карта 80 встречается в `East 1` на позиции 26 и в `East 3` на позиции 27 — это моменты \(t=25\) и \(t=26\). При \(D=0\) её позиция в обоих сообщениях равна одной начальной переменной \(P_{80}\). ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/data.csv))
+
+Но ваш INPUT_RULE в этой ветке даёт
+
+\[
+K\le\min(S,83-S),
+\]
+
+поэтому соседние окна не пересекаются. Соответствующее арифметическое доказательство — `static80_unsat` ниже.
+
+Эту ветку, а также уже обнаруженные противоречия, можно представлять пустой дизъюнкцией и **одной** фиктивной переменной вместо 83. Таким образом, там уменьшение получается по числу переменных, а не по арности.
+
+## 3. Изменение ядра Python
+
+Ниже helper для **N=83 и различных первых карт сообщений**. Вызов заменяет внутренний цикл обновлений `other`; отрицательная импликация больше не добавляется.
+
+```python
+def _v3_other_updates(
+    model, positions, current_card, source, destination, check
+):
+    targets = []
+
+    for label in list(positions):
+        check()
+        if label == current_card:
+            continue
+
+        before = positions[label]
+        selected = model.new_bool_var("")
+
+        # Одно направление определения hit сохраняем.
+        model.add(before == destination).only_enforce_if(selected)
+
+        after = model.new_int_var(0, 82, "")
+        _v2_add_mux(model, selected, before, source, after)
+
+        positions[label] = after
+        targets.append(after)
+
+    for start in range(0, len(targets), 3):
+        model.add_all_different(
+            [destination, *targets[start:start + 3]]
+        )
+
+    return len(targets), (len(targets) + 2) // 3
+```
+
+`add_all_different` применяется к обычным переменным; никаких скрытых табличных доменов здесь нет. ([raw.githubusercontent.com](https://raw.githubusercontent.com/google/or-tools/v9.15/ortools/sat/python/cp_model.py))
+
+В основном цикле, **после** создания `b` и назначения `pos[card] = b`, когда карта ещё нужна:
+
+```python
+added, block_count = _v3_other_updates(
+    model, pos, card, a, b, check
+)
+updates += added
+batch_blocks += block_count
+```
+
+В начале новой версии builder:
+
+```python
+batch_blocks = 0
+```
+
+В конце вместо `_v2_add_distinct(...)`:
+
+```python
+if batch_blocks + 2739 > updates:
+    raise AssertionError("Недостаточный бюджет для покрытия арности 4")
+
+for indices in _v2_cover_blocks(83, group_count=42):
+    check()
+    model.add_all_different([initial[i] for i in indices])
+```
+
+Компактное представление **доказанного** UNSAT:
+
+```python
+def _v3_impossible(n):
+    from ortools.sat.python import cp_model
+
+    model = cp_model.CpModel()
+    stub = model.new_int_var(0, 0, "_unsat_stub")
+    model.add_bool_or([])
+
+    # Длина нужна существующему интерфейсу для N/dataset.
+    # SAT здесь невозможен, поэтому позиции из этого списка не извлекаются.
+    return model, [stub.index] * n, []
+```
+
+Для \(D=0\) применять это сокращение следует после проверки указанного свидетельства из CSV. Не следует переносить безусловный `D == 0 → UNSAT` на произвольный другой набор сообщений.
+
+## 4. Lean: эквивалентность шагов, всей трассы и расчёт размеров
+
+Файл `DeckV3.lean`. Ориентир — **mathlib v4.19.0 / Lean 4.19.0**. ([raw.githubusercontent.com](https://raw.githubusercontent.com/leanprover-community/mathlib4/v4.19.0/lean-toolchain))
+
+`Old` описывает исходные три ограничения.  
+`New` описывает положительную импликацию, Element и пошаговые AllDifferent.
+
+В `trace_iff`:
+
+- `none` обозначает выдаваемую карту;
+- `some i` — остальные ещё нужные карты;
+- `link` — инъективное переиндексирование оставшихся карт между шагами.
+
+Доказательство разрешает удалять карты после последнего использования.
+
+```lean
+import Mathlib
+
+set_option maxRecDepth 100000
+set_option maxHeartbeats 0
+
+namespace DeckV3
+
+variable {ι : Type}
+
+def Common (a b : Nat) (x : ι → Nat)
+    (h : ι → Bool) (y : ι → Nat) : Prop :=
+  (∀ i, h i = true → x i = b) ∧
+  (∀ i, y i = if h i = true then a else x i)
+
+def Old (a b : Nat) (x : ι → Nat)
+    (h : ι → Bool) (y : ι → Nat) : Prop :=
+  Common a b x h y ∧
+  (∀ i, h i = false → x i ≠ b)
+
+-- AllDifferent(b, y_i внутри каждого блока).
+def New (a b : Nat) (x : ι → Nat)
+    (h : ι → Bool) (y : ι → Nat) (group : ι → Nat) : Prop :=
+  Common a b x h y ∧
+  (∀ i, y i ≠ b) ∧
+  (∀ i j, group i = group j → y i = y j → i = j)
+
+theorem new_implies_old
+    {a b : Nat} {x y : ι → Nat}
+    {h : ι → Bool} {group : ι → Nat}
+    (H : New a b x h y group) :
+    Old a b x h y := by
+  refine ⟨H.1, ?_⟩
+  intro i hi hb
+  have hy : y i = x i := by
+    simpa [hi] using H.1.2 i
+  exact H.2.1 i (hy.trans hb)
+
+def moved (a b z : Nat) : Nat :=
+  if z = b then a else z
+
+theorem old_value
+    {a b : Nat} {x y : ι → Nat} {h : ι → Bool}
+    (H : Old a b x h y) :
+    ∀ i, y i = moved a b (x i) := by
+  rcases H with ⟨⟨hp, hm⟩, hn⟩
+  intro i
+  cases hi : h i with
+  | false =>
+      have hx : x i ≠ b := hn i hi
+      simpa [moved, hi, hx] using hm i
+  | true =>
+      have hx : x i = b := hp i hi
+      simpa [moved, hi, hx] using hm i
+
+theorem moved_ne
+    {a b : Nat} (hab : a ≠ b) (z : Nat) :
+    moved a b z ≠ b := by
+  by_cases hz : z = b
+  · simp [moved, hz, hab]
+  · simp [moved, hz]
+
+theorem moved_injective
+    {a b : Nat} {x : ι → Nat}
+    (hx : Function.Injective x)
+    (ha : ∀ i, x i ≠ a) :
+    Function.Injective (fun i => moved a b (x i)) := by
+  intro i j hij
+  by_cases hi : x i = b
+  · by_cases hj : x j = b
+    · exact hx (hi.trans hj.symm)
+    · have hja : x j = a := by
+        simpa [moved, hi, hj] using hij.symm
+      exact False.elim (ha j hja)
+  · by_cases hj : x j = b
+    · have hia : x i = a := by
+        simpa [moved, hi, hj] using hij
+      exact False.elim (ha i hia)
+    · apply hx
+      simpa [moved, hi, hj] using hij
+
+theorem step_iff
+    {a b : Nat} {x y : ι → Nat} {h : ι → Bool}
+    (group : ι → Nat)
+    (hx : Function.Injective x)
+    (ha : ∀ i, x i ≠ a)
+    (hab : a ≠ b) :
+    Old a b x h y ↔ New a b x h y group := by
+  constructor
+  · intro H
+    have hy := old_value H
+    refine ⟨H.1, ?_, ?_⟩
+    · intro i
+      rw [hy i]
+      exact moved_ne hab (x i)
+    · intro i j _ hij
+      apply moved_injective (a := a) (b := b) hx ha
+      rw [← hy i, ← hy j]
+      exact hij
+  · exact new_implies_old
+
+def vec (a : Nat) (x : ι → Nat) : Option ι → Nat
+  | none => a
+  | some i => x i
+
+theorem vec_information
+    {a : Nat} {x : ι → Nat}
+    (H : Function.Injective (vec a x)) :
+    Function.Injective x ∧ (∀ i, x i ≠ a) := by
+  constructor
+  · intro i j hij
+    have q : (some i : Option ι) = some j :=
+      H (show vec a x (some i) = vec a x (some j) from hij)
+    exact Option.some.inj q
+  · intro i hij
+    have q : (some i : Option ι) = none :=
+      H (show vec a x (some i) = vec a x none from hij)
+    cases q
+
+theorem vec_injective
+    {a : Nat} {x : ι → Nat}
+    (hx : Function.Injective x)
+    (ha : ∀ i, x i ≠ a) :
+    Function.Injective (vec a x) := by
+  intro i j hij
+  cases i with
+  | none =>
+      cases j with
+      | none => rfl
+      | some j =>
+          exact False.elim
+            (ha j (by simpa [vec] using hij.symm))
+  | some i =>
+      cases j with
+      | none =>
+          exact False.elim
+            (ha i (by simpa [vec] using hij))
+      | some j =>
+          apply congrArg Option.some
+          apply hx
+          simpa [vec] using hij
+
+theorem step_preserves
+    {a b : Nat} {x y : ι → Nat} {h : ι → Bool}
+    (Hinj : Function.Injective (vec a x))
+    (hab : a ≠ b)
+    (H : Old a b x h y) :
+    Function.Injective (vec b y) := by
+  obtain ⟨hx, ha⟩ := vec_information Hinj
+  have M := (step_iff (fun _ => 0) hx ha hab).mp H
+  apply vec_injective
+  · intro i j hij
+    exact M.2.2 i j rfl hij
+  · exact M.2.1
+
+-- Эквивалентность всех шагов, а не только отдельного gate.
+theorem trace_iff
+    (T : Nat) (m : Nat → Nat)
+    (a b : Nat → Nat)
+    (x y : ∀ t, Fin (m t) → Nat)
+    (h : ∀ t, Fin (m t) → Bool)
+    (group : ∀ t, Fin (m t) → Nat)
+    (link : ∀ t,
+      Option (Fin (m (t + 1))) → Option (Fin (m t)))
+    (Hlink : ∀ t, Function.Injective (link t))
+    (H0 : Function.Injective (vec (a 0) (x 0)))
+    (Hreuse : ∀ t, t + 1 < T →
+      vec (a (t + 1)) (x (t + 1)) =
+        (vec (b t) (y t)) ∘ link t)
+    (Hab : ∀ t, t < T → a t ≠ b t) :
+    (∀ t, t < T → Old (a t) (b t) (x t) (h t) (y t)) ↔
+    (∀ t, t < T →
+      New (a t) (b t) (x t) (h t) (y t) (group t)) := by
+  constructor
+  · intro H
+    have Hinj :
+        ∀ t, t < T →
+          Function.Injective (vec (a t) (x t)) := by
+      intro t
+      induction t with
+      | zero =>
+          intro _
+          exact H0
+      | succ t ih =>
+          intro ht
+          have ht0 : t < T := by omega
+          have Hafter :
+              Function.Injective (vec (b t) (y t)) :=
+            step_preserves (ih ht0) (Hab t ht0) (H t ht0)
+          rw [Hreuse t (by omega)]
+          intro i j hij
+          apply Hlink t
+          apply Hafter
+          exact hij
+    intro t ht
+    obtain ⟨hx, ha⟩ := vec_information (Hinj t ht)
+    exact
+      (step_iff (group t) hx ha (Hab t ht)).mp (H t ht)
+  · intro H t ht
+    exact new_implies_old (H t ht)
+
+-- Положительный ненулевой D действительно перемещает карту.
+theorem shift_ne
+    {a d : Nat}
+    (ha : a < 83) (hd0 : 0 < d) (hd : d < 83) :
+    a ≠ (a + d) % 83 := by
+  omega
+
+-- Соответствие исходному ограниченному домену old - b.
+theorem nonzero_domain_iff
+    {x y : Nat} (hx : x < 83) (hy : y < 83) :
+    (((-82 : Int) ≤ (x : Int) - (y : Int) ∧
+       (x : Int) - (y : Int) ≤ -1) ∨
+      (1 ≤ (x : Int) - (y : Int) ∧
+       (x : Int) - (y : Int) ≤ 82)) ↔ x ≠ y := by
+  omega
+
+-- Семантика покрытия начального AllDifferent.
+def Covered (q : Nat) (p : Fin 83 → Nat) : Prop :=
+  ∀ g h : Nat, g < q → h < q → g < h →
+    ∀ i j : Fin 83,
+      (i.val % q = g ∨ i.val % q = h) →
+      (j.val % q = g ∨ j.val % q = h) →
+      p i = p j → i = j
+
+theorem covered_iff
+    {q : Nat} (hq : 2 ≤ q) (p : Fin 83 → Nat) :
+    Covered q p ↔ Function.Injective p := by
+  constructor
+  · intro H
+    have together :
+        ∀ g h : Nat, g < q → h < q → g ≠ h →
+          ∀ i j : Fin 83,
+            (i.val % q = g ∨ i.val % q = h) →
+            (j.val % q = g ∨ j.val % q = h) →
+            p i = p j → i = j := by
+      intro g h hg hh hne i j hi hj hp
+      by_cases hlt : g < h
+      · exact H g h hg hh hlt i j hi hj hp
+      · have hlt' : h < g := by omega
+        exact H h g hh hg hlt' i j
+          (Or.symm hi) (Or.symm hj) hp
+    intro i j hp
+    let gi := i.val % q
+    let gj := j.val % q
+    have hgi : gi < q := Nat.mod_lt i.val (by omega)
+    have hgj : gj < q := Nat.mod_lt j.val (by omega)
+    by_cases he : gi = gj
+    · let other := if gi = 0 then 1 else 0
+      have ho : other < q := by
+        dsimp [other]
+        split_ifs <;> omega
+      have hn : gi ≠ other := by
+        dsimp [other]
+        split_ifs <;> omega
+      exact together gi other hgi ho hn i j
+        (Or.inl rfl) (Or.inl he.symm) hp
+    · exact together gi gj hgi hgj he i j
+        (Or.inl rfl) (Or.inr rfl) hp
+  · intro H g h _ _ _ i j _ _ hp
+    exact H hp
+
+theorem initial_equiv (p : Fin 83 → Nat) :
+    Covered 9 p ↔ Covered 42 p :=
+  (covered_iff (q := 9) (by decide) p).trans
+    (covered_iff (q := 42) (by decide) p).symm
+
+def blocks (q : Nat) : List (List Nat) :=
+  (List.range q).flatMap fun g =>
+    ((List.range q).filter (fun h => decide (g < h))).map
+      fun h =>
+        (List.range 83).filter fun i =>
+          decide (i % q = g ∨ i % q = h)
+
+def blockStats (q : Nat) : Nat × Nat × Nat :=
+  let bs := blocks q
+  (bs.length,
+   (bs.map List.length).sum,
+   (bs.map List.length).foldl Nat.max 0)
+
+example : blockStats 9 = (36, 664, 20) := by decide
+example : blockStats 42 = (861, 3403, 4) := by decide
+
+structure Size where
+  variables : Nat
+  constraints : Nat
+  totalArity : Nat
+  maxArity : Nat
+  coefficientEntries : Nat
+  maxCoefficient : Nat
+  rhsEndpoints : Nat
+
+def before (B E : Nat) : Size where
+  variables := 83 + B + 2 * E
+  constraints := B + 3 * E + 36
+  totalArity := 2 * B + 10 * E + 664
+  maxArity := 20
+  coefficientEntries := 2 * B + 4 * E + 664
+  maxCoefficient := 1
+  rhsEndpoints := 6 * E
+
+def after (B E F : Nat) : Size where
+  variables := 83 + B + 2 * E
+  constraints := B + 2 * E + F + 861
+  totalArity := 2 * B + 8 * E + F + 3403
+  maxArity := 4
+  coefficientEntries := 2 * B + 3 * E + F + 3403
+  maxCoefficient := 1
+  rhsEndpoints := 2 * E
+
+def NoGrowth (old new : Size) : Prop :=
+  new.variables ≤ old.variables ∧
+  new.constraints ≤ old.constraints ∧
+  new.totalArity ≤ old.totalArity ∧
+  new.maxArity ≤ old.maxArity ∧
+  new.coefficientEntries ≤ old.coefficientEntries ∧
+  new.maxCoefficient ≤ old.maxCoefficient ∧
+  new.rhsEndpoints ≤ old.rhsEndpoints
+
+theorem sizes_ok
+    (B E F : Nat) (budget : F + 2739 ≤ E) :
+    NoGrowth (before B E) (after B E F) ∧
+    5 * (after B E F).maxArity ≤ (before B E).maxArity ∧
+    3 * (after B E F).rhsEndpoints =
+      (before B E).rhsEndpoints := by
+  constructor
+  · dsimp [NoGrowth, before, after]
+    refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> omega
+  · constructor
+    · norm_num [before, after]
+    · dsimp [before, after]
+      omega
+
+-- D=0: один P80 не может принадлежать обоим соседним окнам.
+theorem static80_unsat
+    (p s k : Int)
+    (hs0 : 0 ≤ s) (hs83 : s < 83)
+    (hk : 0 < k) (hks : k ≤ s) (hkn : k ≤ 83 - s) :
+    ¬ ((p - 25 * s) % 83 < k ∧
+       (p - 26 * s) % 83 < k) := by
+  omega
+
+example : 2 * (1 : Nat) ≤ 83 := by decide
+
+end DeckV3
+```
+
+Здесь нет `sorry`, добавленных аксиом или `native_decide`. Для вычислительных сертификатов используется обычный `decide`; арифметика доказывается `omega`. В отличие от native-вычисления, такой подход не добавляет компилятор Lean в доверенную часть доказательства. ([lean-lang.org](https://lean-lang.org/doc/reference/4.19.0/Tactic-Proofs/Tactic-Reference/))
+
+## 5. Сертификат именно вашего CSV
+
+Чтобы не подменять проверку данных доверенными Python-числами, генератор **вставляет все сообщения в Lean**, а Lean самостоятельно вычисляет \(B,E,F\).
+
+На шаге \(t\) обновляются ровно те отличные от текущей карты, которые встречаются в оставшемся суффиксе:
+
+\[
+m_t=
+\left|\operatorname{set}(\text{suffix}_{t+1})
+       \setminus\{\text{current}_t\}\right|.
+\]
+
+Используемые операции над списками, включая `drop`, `eraseDups`, `flatMap` и `all`, доступны в выбранной версии Lean. ([raw.githubusercontent.com](https://raw.githubusercontent.com/leanprover/lean4/v4.19.0/src/Init/Data/List/Basic.lean))
+
+Файл `make_certificate.py` рядом с `data.csv` и `DeckV3.lean`:
+
+```python
+import csv
+import json
+from pathlib import Path
+
+messages = []
+
+with Path("data.csv").open(
+    encoding="utf-8-sig", newline=""
+) as stream:
+    reader = csv.reader(stream)
+    header = next(reader)
+    assert header[:2] == ["#", "Pos"]
+
+    for row in reader:
+        if not any(cell.strip() for cell in row):
+            continue
+
+        cells = [cell.strip() for cell in row[2:]]
+        while cells and cells[-1] == "":
+            cells.pop()
+
+        if any(cell == "" for cell in cells):
+            raise ValueError("Пустая ячейка внутри сообщения")
+
+        messages.append([int(cell) for cell in cells])
+
+literal = json.dumps(messages, separators=(",", ":"))
+
+certificate = r"""
+namespace DatasetCertificate
+
+open DeckV3
+
+def data : List (List Nat) := DATA_LITERAL
+
+def noAdj (xs : List Nat) : Bool :=
+  (xs.zip (xs.drop 1)).all
+    (fun ab => decide (ab.1 ≠ ab.2))
+
+def eventSizes : List Nat :=
+  data.flatMap fun xs =>
+    (List.range xs.length).map fun t =>
+      let current := (xs.drop t).headD 0
+      ((xs.drop (t + 1)).eraseDups.filter
+        (fun c => decide (c ≠ current))).length
+
+def B : Nat :=
+  (eventSizes.filter (fun q => decide (0 < q))).length
+
+def E : Nat := eventSizes.sum
+
+def F : Nat :=
+  (eventSizes.map (fun q => (q + 2) / 3)).sum
+
+example : data.length = 9 := by decide
+
+example :
+    data.all (fun xs => decide (0 < xs.length)) = true :=
+  by decide
+
+example : data.all noAdj = true := by decide
+
+example :
+    (data.map (fun xs => xs.headD 0)).Nodup := by decide
+
+example :
+    data.flatten.all (fun c => decide (c < 83)) = true ∧
+    data.flatten.eraseDups.length = 83 := by decide
+
+example :
+    B = (data.map (fun xs => xs.length - 1)).sum := by decide
+
+-- Свидетельство статического противоречия.
+example :
+    (((data[0]?).getD [])[25]?) = some 80 := by decide
+
+example :
+    (((data[4]?).getD [])[26]?) = some 80 := by decide
+
+theorem budget : F + 2739 ≤ E := by decide
+
+theorem parameters :
+    NoGrowth (before B E) (after B E F) ∧
+    5 * (after B E F).maxArity ≤ (before B E).maxArity ∧
+    3 * (after B E F).rhsEndpoints =
+      (before B E).rhsEndpoints :=
+  sizes_ok B E F budget
+
+#eval (B, E, F)
+
+#print axioms DatasetCertificate.parameters
+#print axioms DeckV3.trace_iff
+
+end DatasetCertificate
+"""
+
+certificate = certificate.replace("DATA_LITERAL", literal)
+
+Path("Checked.lean").write_text(
+    Path("DeckV3.lean").read_text(encoding="utf-8")
+    + "\n"
+    + certificate,
+    encoding="utf-8",
+)
+```
+
+В проекте выбранной версии mathlib:
+
+```bash
+python make_certificate.py
+lake env lean Checked.lean
+```
+
+Итоговая проверка состоит из трёх независимых частей:
+
+1. **`initial_equiv`** — новое покрытие начальной различности эквивалентно старому.
+2. **`trace_iff`** — замена пошаговых ограничений сохраняет множество решений всей трассы.
+3. **`DatasetCertificate.parameters`** — на вашем CSV ни одна структурная метрика не увеличивается, максимальная арность уменьшается минимум в 5 раз.
+
+Это доказательство **редукции системы ограничений**. Оно не является доказательством корректности всего Python-сервера или реализации CP-SAT и не утверждает ускорения после presolve.
