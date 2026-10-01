@@ -1,0 +1,531 @@
+*Thinking...*
+
+> **Considering budget checks and solutions**
+> 
+> I'm thinking about how to validate budget checks after generating a synthetic CSV. It seems like there might be an expectation from the user for a complete `.py` solution, though that's tricky since tools can't access the file system. I could suggest a generator patch script like `make_v4.py` that saves files separately while ensuring model changes and self-test assertions are in place. 
+> 
+> I need to be careful not to overwrite legacy data, especially considering the user didn’t explicitly ask for backups. Let's ensure we approach this thoughtfully!
+> 
+> **Outlining server modifications**
+> 
+> I'm focusing on making minimal changes to the server. First, I need to replace one specific line. The old endpoint ratio check for `_v3_selftest` will switch to `eqzero`, while the old profile metrics iteration can remain intact. I also need to change the `REDUCED_VERSION` and `REDUCED_COPY_MARKER` to v4, keeping the pointer name unchanged unless it's a new filename using a separate pointer in the v4 script. Lastly, I want to ensure the directory structure is consistent without breaking compatibility!
+> 
+> **Simplifying changes and operations**
+> 
+> I'm considering more changes to streamline user experience with explicit commands like `--run-dir oldpath` and `--copy-dir newpath`. This way, I can bypass `_v3_find` and easily switch the version marker to v4, allowing the new script filename to use its own working directory. Also, the `_v3_check_previous_source` doesn’t look for the v3 marker; it expects an old version tuple. The copying process will maintain previous states without overwriting the new JSON file. By making these adjustments, I'm hoping to improve functionality and usability in the workflow!
+> 
+> **Verifying Lean libraries and imports**
+> 
+> I'm considering whether to use `import Mathlib`, but it seems that it might have prerequisites that aren’t available on my platform. Instead, I’m wondering if it’s better to use `import Std.Tactic`, especially when using omega. I need to confirm if the official Lean packages include `Std.Tactic`. With Lean4 version 4.26, I'm checking to see if the `Std/Tactic.lean` file exists in the link provided.
+> 
+> **Exploring noncomputable cases**
+> 
+> I’m considering whether projection exists in noncomputable contexts. I see that the syntax for using `cases h` with `intro σ hσ` functions correctly. This approach seems to support eliminators like `Exists.intro`, but I'm unsure about the implications. I’m also thinking about whether I need to bring in Mathlib for specific cases related to Finset, especially since it’s outside the standard library options. There's a lot to unpack here!
+
+**Да: можно убрать все явные домены линейных ограничений, не увеличивая остальные ваши метрики.** На полном динамическом построении для данного CSV дополнительно уменьшается число записанных коэффициентов **примерно в 2,38 раза**.
+
+Это результат **для входного `CpModelProto`, до presolve**, то есть именно для метрик вашего `_v2_stats`. Ниже — точная замена, доказательство её эквивалентности на Lean и проверочный Python-скрипт. Численные результаты я вывожу из структуры модели и приведённых счётчиков; **запуск Lean/OR-Tools здесь не выполнялся**. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean2/deck_server_reduced_v3))
+
+## 1. Замена: условное равенство через Element с повторным target
+
+В `_v3_build_model`, внутри `if fresh`, сейчас создаётся:
+
+```python
+model.add(before == b).only_enforce_if(hit)
+```
+
+Заменяем **только эту строку** на:
+
+```python
+_v2_add_mux(model, hit, before, b, before)
+```
+
+Это записывает:
+
+\[
+\texttt{before}=[\texttt{before},\texttt{b}][\texttt{hit}].
+\]
+
+Семантика `Element` — равенство target элементу массива с выбранным индексом. Поэтому:
+
+- `hit = 0`: получается `before = before`, никаких дополнительных требований;
+- `hit = 1`: получается `before = b`.
+
+Следовательно, при булевом домене `hit`:
+
+\[
+\boxed{
+(\texttt{hit}=1\Rightarrow\texttt{before}=\texttt b)
+\;\Longleftrightarrow\;
+\operatorname{Element}(\texttt{hit},[\texttt{before},\texttt b],\texttt{before})
+}
+\]
+
+Это **эквивалентность на тех же переменных**, а не ослабление модели и не только сохранение SAT/UNSAT. ([raw.githubusercontent.com](https://raw.githubusercontent.com/google/or-tools/v9.15/ortools/sat/python/cp_model.py))
+
+**Важно использовать именно существующий `_v2_add_mux`.** Он записывает компактные legacy-поля `index/target/vars`, без коэффициентов линейных выражений. Просто вызвать современный `add_element` без преобразования protobuf недостаточно для гарантии по числу коэффициентов. Legacy-поля присутствуют в схеме OR-Tools 9.15, а нужный helper уже есть в вашем файле. ([raw.githubusercontent.com](https://raw.githubusercontent.com/google/or-tools/v9.15/ortools/sat/cp_model.proto))
+
+### Изменение одного блока
+
+| Метрика | Условное равенство | Новый Element |
+|---|---:|---:|
+| Дополнительные переменные | 0 | 0 |
+| Ограничения | 1 | 1 |
+| Арность, включая enforcement | 3 | 3 |
+| Записи коэффициентов | 2 | **0** |
+| Максимальный модуль коэффициента блока | 1 | **0** |
+| Явные endpoints линейного домена | 2 | **0** |
+
+Множество используемых индексов одинаково: `{hit, before, b}`. Повторное упоминание `before` не увеличивает арность: ваш счётчик использует множество индексов.
+
+Остальные `Element`, `AllDifferent`, modulo, окна, переменные и их домены **не меняются**. Дополнительные предположения о соседних дублях, различных префиксах и использовании всех карт для этой замены не требуются — она верна и без них.
+
+## 2. Результат относительно v3, а не относительно старой BASE-модели
+
+Для полного динамического построения CSV:
+
+```text
+N = 83
+E = L = 39287
+T = 38260
+F = 13095
+M = L - T = 1027
+```
+
+Здесь `M` — число modulo-переходов. Равенство `M=L−T` следует из отсутствия соседних дублей и того, что все selectors свежие (`E=L`): на каждом переходе ровно один следующий символ исключён из `targets`.
+
+Начальное small4-покрытие имеет 861 ограничение и суммарную арность 3403. Отсюда получается следующий **расчётный профиль**, который проверяет скрипт ниже. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/data.csv))
+
+| Метрика | v3 | После замены |
+|---|---:|---:|
+| Переменные | 79 684 | 79 684 |
+| Ограничения | 93 557 | 93 557 |
+| Суммарная арность | 331 821 | 331 821 |
+| Максимальная арность | 4 | 4 |
+| Записи коэффициентов | 135 386 | **56 812** |
+| Максимальный модуль коэффициента | 1 | 1 |
+| `rhs_endpoints` | 78 574 | **0** |
+
+В частности:
+
+\[
+2\cdot56812=113624\le135386.
+\]
+
+Для `HYBRID synthetic after` из вашего лога расчёт такой:
+
+```text
+variables:          10889 → 10889
+constraints:        12868 → 12868
+total_arity:        44222 → 44222
+max_arity:              4 → 4
+coefficient_entries:20212 → 10608
+max_coefficient:        1 → 1
+rhs_endpoints:       9604 → 0
+```
+
+**Основной гарантированно уменьшенный параметр — `rhs_endpoints`.** Максимальный модуль коэффициента не уменьшается, но и не растёт. Размеры **доменов переменных** остаются прежними.
+
+## 3. Доказательство на Lean
+
+Файл `DeckSelfElement.lean`. Используется Lean 4 со стандартной библиотекой, без Mathlib.
+
+Доказано:
+
+1. точное локальное равенство семантик;
+2. эквивалентность всей модели в **произвольном неизменённом контексте**;
+3. сохранение любых наблюдаемых результатов, включая исходную колоду и выходные позиции;
+4. неувеличение всех семи метрик;
+5. требуемые численные неравенства для профиля CSV.
+
+`Rest` ниже означает все неизменённые ограничения и домены. Поскольку теорема верна для **любого** `Rest`, это не предположение о корректности конкретного ограничения.
+
+```lean
+import Std
+import Lean.Elab.Tactic.Omega
+
+namespace DeckSelfElement
+
+abbrev Assignment := Nat → Int
+
+def BoolDomain (h : Int) : Prop :=
+  h = 0 ∨ h = 1
+
+def GuardEq (h x y : Int) : Prop :=
+  h = 1 → x = y
+
+-- Точная семантика Element с массивом длины 2.
+def Element2 (h x0 x1 target : Int) : Prop :=
+  (h = 0 ∧ target = x0) ∨
+  (h = 1 ∧ target = x1)
+
+theorem guard_element_iff
+    (h x y : Int) (hb : BoolDomain h) :
+    GuardEq h x y ↔ Element2 h x y x := by
+  cases hb with
+  | inl h0 =>
+      subst h
+      simp [GuardEq, Element2]
+  | inr h1 =>
+      subst h
+      simp [GuardEq, Element2]
+
+structure Guard where
+  hit    : Nat
+  before : Nat
+  dest   : Nat
+
+def OldLocal (g : Guard) (σ : Assignment) : Prop :=
+  BoolDomain (σ g.hit) ∧
+  GuardEq (σ g.hit) (σ g.before) (σ g.dest)
+
+def NewLocal (g : Guard) (σ : Assignment) : Prop :=
+  BoolDomain (σ g.hit) ∧
+  Element2 (σ g.hit) (σ g.before) (σ g.dest) (σ g.before)
+
+theorem local_equiv (g : Guard) (σ : Assignment) :
+    OldLocal g σ ↔ NewLocal g σ := by
+  constructor
+  · intro h
+    exact ⟨h.1,
+      (guard_element_iff
+        (σ g.hit) (σ g.before) (σ g.dest) h.1).mp h.2⟩
+  · intro h
+    exact ⟨h.1,
+      (guard_element_iff
+        (σ g.hit) (σ g.before) (σ g.dest) h.1).mpr h.2⟩
+
+-- Проверяем также, что множество используемых переменных не меняется.
+def OldUses (g : Guard) (v : Nat) : Prop :=
+  v = g.hit ∨ v = g.before ∨ v = g.dest
+
+def NewUses (g : Guard) (v : Nat) : Prop :=
+  v = g.hit ∨ (v = g.before ∨ v = g.before) ∨ v = g.dest
+
+theorem same_variables (g : Guard) (v : Nat) :
+    OldUses g v ↔ NewUses g v := by
+  simp [OldUses, NewUses]
+
+def OldModel
+    (Rest : Assignment → Prop)
+    (guards : List Guard)
+    (σ : Assignment) : Prop :=
+  Rest σ ∧ ∀ g ∈ guards, OldLocal g σ
+
+def NewModel
+    (Rest : Assignment → Prop)
+    (guards : List Guard)
+    (σ : Assignment) : Prop :=
+  Rest σ ∧ ∀ g ∈ guards, NewLocal g σ
+
+theorem models_equivalent
+    (Rest : Assignment → Prop)
+    (guards : List Guard)
+    (σ : Assignment) :
+    OldModel Rest guards σ ↔ NewModel Rest guards σ := by
+  constructor
+  · intro h
+    refine ⟨h.1, ?_⟩
+    intro g hg
+    exact (local_equiv g σ).mp (h.2 g hg)
+  · intro h
+    refine ⟨h.1, ?_⟩
+    intro g hg
+    exact (local_equiv g σ).mpr (h.2 g hg)
+
+-- observe может извлекать исходную колоду, выходные позиции
+-- или вообще любой результат из присваивания.
+theorem projected_equiv
+    {α : Type}
+    (Rest : Assignment → Prop)
+    (guards : List Guard)
+    (observe : Assignment → α)
+    (value : α) :
+    (∃ σ, OldModel Rest guards σ ∧ observe σ = value) ↔
+    (∃ σ, NewModel Rest guards σ ∧ observe σ = value) := by
+  constructor
+  · intro h
+    cases h with
+    | intro σ hs =>
+        exact ⟨σ,
+          (models_equivalent Rest guards σ).mp hs.1,
+          hs.2⟩
+  · intro h
+    cases h with
+    | intro σ hs =>
+        exact ⟨σ,
+          (models_equivalent Rest guards σ).mpr hs.1,
+          hs.2⟩
+
+structure Profile where
+  variables          : Nat
+  constraints        : Nat
+  totalArity         : Nat
+  maxArity           : Nat
+  coefficientEntries : Nat
+  maxCoefficient     : Nat
+  rhsEndpoints       : Nat
+  deriving DecidableEq, Repr
+
+-- r содержит профиль неизменённых ограничений.
+-- Все объявления переменных уже учтены в r.variables.
+-- В данном генераторе три индекса каждого guard различны.
+def beforeProfile (r : Profile) (L : Nat) : Profile :=
+  { variables          := r.variables
+    constraints        := r.constraints + L
+    totalArity         := r.totalArity + 3 * L
+    maxArity           := max r.maxArity (if L = 0 then 0 else 3)
+    coefficientEntries := r.coefficientEntries + 2 * L
+    maxCoefficient     := max r.maxCoefficient (if L = 0 then 0 else 1)
+    rhsEndpoints       := r.rhsEndpoints + 2 * L }
+
+def afterProfile (r : Profile) (L : Nat) : Profile :=
+  { variables          := r.variables
+    constraints        := r.constraints + L
+    totalArity         := r.totalArity + 3 * L
+    maxArity           := max r.maxArity (if L = 0 then 0 else 3)
+    coefficientEntries := r.coefficientEntries
+    maxCoefficient     := r.maxCoefficient
+    rhsEndpoints       := r.rhsEndpoints }
+
+def NoIncrease (new old : Profile) : Prop :=
+  new.variables          ≤ old.variables ∧
+  new.constraints        ≤ old.constraints ∧
+  new.totalArity         ≤ old.totalArity ∧
+  new.maxArity           ≤ old.maxArity ∧
+  new.coefficientEntries ≤ old.coefficientEntries ∧
+  new.maxCoefficient     ≤ old.maxCoefficient ∧
+  new.rhsEndpoints       ≤ old.rhsEndpoints
+
+theorem never_increases (r : Profile) (L : Nat) :
+    NoIncrease (afterProfile r L) (beforeProfile r L) := by
+  dsimp [NoIncrease, beforeProfile, afterProfile]
+  refine ⟨Nat.le_refl _, Nat.le_refl _, Nat.le_refl _,
+    Nat.le_refl _, ?_, ?_, ?_⟩
+  · omega
+  · exact Nat.le_max_left _ _
+  · omega
+
+theorem coefficients_at_least_halved
+    (r : Profile) (L : Nat)
+    (h : r.coefficientEntries ≤ 2 * L) :
+    2 * (afterProfile r L).coefficientEntries ≤
+      (beforeProfile r L).coefficientEntries := by
+  dsimp [afterProfile, beforeProfile]
+  omega
+
+theorem endpoints_at_least_halved
+    (r : Profile) (L : Nat)
+    (h : r.rhsEndpoints = 0) :
+    2 * (afterProfile r L).rhsEndpoints ≤
+      (beforeProfile r L).rhsEndpoints := by
+  dsimp [afterProfile, beforeProfile]
+  omega
+
+-- Профиль неизменённой части для полного динамического CSV.
+def csvRest : Profile :=
+  { variables          := 83 + 39287 + 39287 + 1027
+    constraints        := 39287 + 1027 + 13095 + 861
+    totalArity         := 4 * 39287 + 2 * 1027 + 38260 + 13095 + 3403
+    maxArity           := 4
+    coefficientEntries := 2 * 1027 + 38260 + 13095 + 3403
+    maxCoefficient     := 1
+    rhsEndpoints       := 0 }
+
+def csvBefore : Profile := beforeProfile csvRest 39287
+def csvAfter  : Profile := afterProfile csvRest 39287
+
+example :
+    csvBefore =
+      ⟨79684, 93557, 331821, 4, 135386, 1, 78574⟩ := by
+  decide
+
+example :
+    csvAfter =
+      ⟨79684, 93557, 331821, 4, 56812, 1, 0⟩ := by
+  decide
+
+example : NoIncrease csvAfter csvBefore :=
+  never_increases csvRest 39287
+
+example :
+    2 * csvAfter.coefficientEntries ≤
+      csvBefore.coefficientEntries := by
+  decide
+
+example :
+    2 * csvAfter.rhsEndpoints ≤ csvBefore.rhsEndpoints := by
+  decide
+
+-- Уменьшение endpoints здесь не является случаем 0 → 0.
+example : 0 < csvBefore.rhsEndpoints := by
+  decide
+
+#print axioms models_equivalent
+#print axioms projected_equiv
+#print axioms never_increases
+
+end DeckSelfElement
+```
+
+Проверка:
+
+```powershell
+lean DeckSelfElement.lean
+```
+
+В этом файле нет `sorry`, `admit` или пользовательских аксиом. Числовая часть проверяет арифметику указанного профиля; она не изображает формальную верификацию CSV-парсера.
+
+## 4. Проверка соответствия реальному protobuf
+
+Сохраните исходный v3 без изменений. Следующий файл `check_self_element_v4.py` создаёт изменённый модуль **только в памяти**. Сервер не запускается, рабочая папка и очередь не изменяются.
+
+Он проверяет:
+
+- одинаковые переменные, домены и выходные индексы;
+- что каждое изменённое ограничение соответствует доказанной замене;
+- точное совпадение остальных ограничений;
+- неувеличение всех метрик;
+- совпадение полных результатов перебора малых моделей.
+
+```python
+from pathlib import Path
+import sys
+import types
+
+path = Path(sys.argv[1]).resolve()
+csv_path = (
+    Path(sys.argv[2]).resolve()
+    if len(sys.argv) > 2
+    else path.with_name("data.csv")
+)
+source = path.read_text(encoding="utf-8-sig")
+
+needle = "model.add(before == b).only_enforce_if(hit)"
+replacement = "_v2_add_mux(model, hit, before, b, before)"
+assert source.count(needle) == 1, "Исходник отличается от ожидаемого v3"
+
+
+def load(text, name):
+    module = types.ModuleType(name)
+    module.__file__ = str(path)
+    sys.modules[name] = module
+    exec(compile(text, str(path), "exec"), module.__dict__)
+    return module
+
+
+old = load(source, "deck_original_check")
+new = load(source.replace(needle, replacement, 1), "deck_changed_check")
+
+
+def compare(label, messages, n, d, s, k):
+    a, ai, ao = old.build_model(messages, n, d, s, k, lambda: None)
+    b, bi, bo = new.build_model(messages, n, d, s, k, lambda: None)
+
+    assert not a.validate(), a.validate()
+    assert not b.validate(), b.validate()
+
+    pa = old._reduced_proto(a)
+    pb = new._reduced_proto(b)
+
+    assert ai == bi and ao == bo
+    assert pa.variables == pb.variables
+    assert len(pa.constraints) == len(pb.constraints)
+
+    for ca, cb in zip(pa.constraints, pb.constraints):
+        if not ca.HasField("linear"):
+            assert ca == cb
+            continue
+
+        assert len(ca.enforcement_literal) == 1
+        hit = ca.enforcement_literal[0]
+        assert hit >= 0
+        assert list(pa.variables[hit].domain) == [0, 1]
+        assert list(ca.linear.domain) == [0, 0]
+        assert len(ca.linear.vars) == 2
+        assert sorted(ca.linear.coeffs) == [-1, 1]
+
+        assert cb.HasField("element")
+        assert not cb.enforcement_literal
+        el = cb.element
+        assert el.index == hit
+        assert len(el.vars) == 2
+        assert el.target == el.vars[0]
+        assert set(el.vars) == set(ca.linear.vars)
+        assert not el.HasField("linear_index")
+        assert not el.HasField("linear_target")
+        assert not el.exprs
+
+    sa = old._v2_stats(pa)
+    sb = new._v2_stats(pb)
+
+    for metric in sa:
+        assert sb[metric] <= sa[metric], (metric, sa, sb)
+
+    assert sb["rhs_endpoints"] == 0
+    assert (
+        sb["coefficient_entries"]
+        == sa["coefficient_entries"] - sa["rhs_endpoints"]
+    )
+
+    print(label, "before:", sa)
+    print(label, "after: ", sb)
+    return sa, sb
+
+
+small_cases = [
+    (3, 1, 0, 1, [[0, 1, 0, 1]]),
+    (3, 1, 0, 1, [[0, 1, 2]]),
+    (5, 2, 0, 2, [[0, 1, 0, 2], [0, 2, 1]]),
+    (4, 0, 1, 1, [[0, 1, 2, 3]]),
+]
+
+for n, d, s, k, messages in small_cases:
+    compare("small", messages, n, d, s, k)
+    solutions_a, _ = old._reduced_enumerate(
+        old.build_model, messages, n, d, s, k
+    )
+    solutions_b, _ = new._reduced_enumerate(
+        new.build_model, messages, n, d, s, k
+    )
+    assert solutions_a == solutions_b
+
+compare(
+    "synthetic",
+    [[0, 1] * 600 + [2, 3, 4]],
+    83, 1, 0, 1,
+)
+
+_, n, messages, _ = old.read_data_csv(csv_path)
+assert old._v3_counts(messages) == (39287, 39287, 38260, 13095)
+
+sa, sb = compare("CSV", messages, n, 1, 0, 1)
+assert 2 * sb["coefficient_entries"] <= sa["coefficient_entries"]
+assert sa["rhs_endpoints"] > 0
+
+print("SELF-ELEMENT CHECK OK")
+```
+
+Запуск:
+
+```powershell
+py check_self_element_v4.py deck_server_reduced_v3.py data.csv
+```
+
+### Поправка существующего selftest
+
+Если внесёте замену непосредственно в отдельную копию сервера, старое ожидание
+
+```python
+3 * new_stats["rhs_endpoints"] == old_stats["rhs_endpoints"]
+```
+
+в `_v3_selftest` уже неверно. Его нужно заменить проверкой:
+
+```python
+new_stats["rhs_endpoints"] == 0
+```
+
+Остальные проверки неувеличения метрик оставьте.
+
+**Граница результата:** доказана эквивалентность преобразования v3 → новый формат и уменьшение входного представления. Уменьшение памяти или времени поиска в два раза из этого не следует: presolve OR-Tools может снова преобразовывать `Element` в линейные ограничения. Поэтому ускорение нужно измерять отдельно. ([raw.githubusercontent.com](https://raw.githubusercontent.com/google/or-tools/v9.15/ortools/sat/cp_model_presolve.cc))
