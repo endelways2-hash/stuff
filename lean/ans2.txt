@@ -1,0 +1,609 @@
+*Thinking...*
+
+> **Exploring model optimization**
+> 
+> I'm examining model V2 and how to unroll positions with many variables involved. I wonder if I can simplify the mux blocks using algebra while avoiding explicit boolean values through absolute value. My goal is to reduce variables and eliminate hits via an inverse constraint relation. I think I can exploit permutations and avoid adjacent duplicates. There's a potential to adjust the maxarity to decrease constraints while optimizing the overall structure.
+> 
+> **Considering constraint optimization**
+> 
+> I'm exploring the idea of merging reified equality and mux into a table constraint involving old, a, b, and new. The current table is enormous, posing issues with domain blowup. I wonder if I can use algebra to simplify it through constraints. My goal is to find a compact replacement for CP-SAT constraints, avoiding unnecessary complexity while ensuring all entries remain distinct. I’ll also consider using Element functions for selection to streamline the updating process and enforce constraints effectively.
+> 
+> **Evaluating table constraints**
+> 
+> I'm thinking about how to set up the new variable based on the old and determining if a 4-arity table is needed. The coefficients and domains involved are huge, which makes managing them tricky. I wonder about the constraints on domain counts and endpoints. It seems important to keep the user’s desire for no domain enlargement in mind. Another idea is to streamline the process with reverse simulation, allowing full permutation tracking while introducing a new variable for ciphertext outputs.
+> 
+> **Considering variable relationships**
+> 
+> I'm exploring whether symmetry can help reduce initial variables through cyclic rotation offsets, but it seems the fixed input window prevents that. The phrase about prefixes likely points to the first ciphertext entry being distinct. Since all prefixes differ, they shouldn't share any initial edges. I'm considering how to prove some properties for grouping the deck using AllDiff. Exhaustive variable elimination in finite CSP could help, but I'm uncertain about effectively using it to compress equality.
+> 
+> **Refining conditional logic**
+> 
+> I’m exploring the importance of avoiding boolean coercion ambiguity in programming. To clarify, I could define a multiplexer function using explicit `if` statements to ensure clear decision-making. For example, I could create a function like `mux (h:Bool)(a x:Int) := if h=true then a else x`. It seems vital to establish formal truths in the code accurately. This approach makes the code easier to understand and less prone to errors.
+
+Сначала проверю, как в v2 считаются параметры, и буду сравнивать именно с этой моделью. Важно не получить формальное «уменьшение» за счёт переноса сложности в большую таблицу переходов.**Да: для этого CSV можно уменьшить максимальную арность с 20 до 5 — ещё в 4 раза — не увеличивая остальные параметры.** Сравнение ниже именно с `element-covered/v2`, а не с исходной моделью, где был один большой `AllDifferent`. В v2 покрытие имеет 36 блоков, суммарную арность 664 и максимальную арность 20. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/deck_server_reduced_v2.py))
+
+Нужны **два изменения одновременно**:
+
+1. удалить доказуемо избыточное ограничение для карты, следующей в шифротексте;
+2. потратить часть этой экономии на более мелкое покрытие начального `AllDifferent`.
+
+Больших таблиц переходов, увеличения коэффициентов или расширения доменов здесь нет.
+
+**Оговорка о проверке:** ниже даю Python-правку и Lean-исходник без `sorry`, `admit` и `native_decide`. Однако компилятор Lean в этой среде я не запускал, поэтому не выдаю исходник за успешно скомпилированный сертификат.
+
+## 1. Что именно можно удалить
+
+Обозначим:
+
+- \(a\) — позиция текущей карты;
+- \(b=(a+D)\bmod83\);
+- \(x\) — старая позиция другой карты;
+- \(y\) — её новая позиция;
+- \(h\) — `hit`.
+
+В v2 обновление другой карты задаётся тремя ограничениями:
+
+\[
+h\Rightarrow x=b,\qquad
+\neg h\Rightarrow x\ne b,\qquad
+y=\operatorname{Element}(h,[x,a]).
+\]
+
+То есть \(y=a\) при `hit`, иначе \(y=x\). ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/deck_server_reduced_v2.py))
+
+Пусть
+
+\[
+W_t=\{(tS+u)\bmod83:0\le u<K\},\qquad
+\delta=(D-S)\bmod83.
+\]
+
+Сохраняем существующее ограничение на \(K\):
+
+\[
+K\le\delta,\qquad K\le83-\delta.
+\]
+
+Это та же проверка, которая используется вашей моделью и симулятором. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/deck_server_reduced_v2.py))
+
+Из неё следует:
+
+\[
+a\in W_t\quad\Longrightarrow\quad b\notin W_{t+1}.
+\]
+
+Действительно, относительно начала следующего окна позиция \(b\) имеет остаток \(u+\delta\), причём
+
+\[
+K\le u+\delta<83.
+\]
+
+Теперь рассмотрим обновление **именно следующей карты** \(c_{t+1}\). Её переменная \(y\) уже ограничена доменом \(W_{t+1}\), поэтому \(y\ne b\).
+
+Если `hit = false`, оставшийся `Element` даёт \(y=x\). Следовательно, автоматически \(x\ne b\).
+
+**Поэтому для этой карты можно удалить только**
+
+```python
+model.add_linear_expression_in_domain(
+    old - b, nonzero_difference
+).only_enforce_if(hit.Not())
+```
+
+Прямое направление `hit ⇒ old == b` сохраняется.
+
+Отсутствие соседних дублей гарантирует, что следующая карта действительно попадает в цикл обновления *других* карт. Различие первых карт сообщений исключает переиспользование соответствующих `hit` через `first_edges`.
+
+## 2. Новое покрытие: арность не больше 5
+
+Карте с номером \(i\) сопоставляем точку
+
+\[
+(r,c)=(\lfloor i/17\rfloor,\ i\bmod17).
+\]
+
+Получаются пять строк длиной \(17,17,17,17,15\).
+
+Используем:
+
+- **289 блоков-прямых**
+  \[
+  c=mr+b\pmod {17},\quad m,b\in\{0,\ldots,16\};
+  \]
+  каждый содержит не более пяти карт;
+- внутри каждой строки — покрытие объединениями двух из девяти групп `c % 9`; это ещё **180 блоков**, каждый размером не больше четырёх.
+
+Пары из разных строк покрываются прямыми. Пары внутри одной строки покрываются второй частью.
+
+Итого:
+
+\[
+\boxed{\text{469 блоков,\quad суммарная арность 2075,\quad максимум 5.}}
+\]
+
+Полноту покрытия и эти три числа проверяет конечный сертификат `decide` в Lean-коде ниже.
+
+## 3. Итоговые параметры
+
+Длины сообщений в предоставленном CSV:
+
+```text
+99, 103, 118, 102, 137, 124, 119, 120, 114
+```
+
+Поэтому число переходов между соседними символами:
+
+\[
+M=\sum_m(|m|-1)=1027,\qquad N=83.
+\]
+
+Это расчёт по предоставленным данным. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/data.csv))
+
+Пусть \(E\) — число `Element`-обновлений других карт. Тогда \(E\ge M\), а число переменных `b` равно \(M\).
+
+Считаем структуру входного protobuf **до presolve**, как делает `_v2_stats`. ([raw.githubusercontent.com](https://raw.githubusercontent.com/endelways2-hash/stuff/refs/heads/my/lean/deck_server_reduced_v2.py))
+
+| Параметр | v2 | Новая модель | Изменение |
+|---|---:|---:|---:|
+| Переменные | \(1110+2E\) | \(1110+2E\) | без изменения |
+| Ограничения | \(1063+3E\) | \(469+3E\) | **−594** |
+| Суммарная арность | \(2718+10E\) | \(1048+10E\) | **−1670** |
+| Максимальная арность | **20** | **5** | **÷4** |
+| Максимальный модуль коэффициента | 1 | 1 | без изменения |
+| Число записей коэффициентов | \(2718+4E\) | \(2075+4E\) | **−643** |
+| `rhs_endpoints` | \(6E\) | \(6E-4108\) | **−4108** |
+
+Домены переменных **вообще не меняются**. Домены оставленных линейных ограничений тоже не меняются; новые линейные ограничения не добавляются.
+
+Числа относятся к полностью построенной динамической модели. Ранние ветки `_reduced_impossible` остаются прежними.
+
+## 4. Python-правка
+
+### Новое покрытие
+
+Добавьте функцию:
+
+```python
+def _v3_cover_blocks_83():
+    blocks = []
+
+    # Пары карт из разных строк.
+    for slope in range(17):
+        for intercept in range(17):
+            block = []
+            for row in range(5):
+                column = (slope * row + intercept) % 17
+                card = 17 * row + column
+                if card < 83:
+                    block.append(card)
+            blocks.append(block)
+
+    # Пары карт внутри одной строки.
+    for row in range(5):
+        groups = [
+            [
+                17 * row + column
+                for column in range(group, 17, 9)
+                if 17 * row + column < 83
+            ]
+            for group in range(9)
+        ]
+        for left in range(9):
+            for right in range(left + 1, 9):
+                blocks.append(groups[left] + groups[right])
+
+    _reduced_require(
+        (
+            len(blocks),
+            sum(map(len, blocks)),
+            max(map(len, blocks)),
+        ) == (469, 2075, 5),
+        "Неверные размеры покрытия v3",
+    )
+    return blocks
+```
+
+### Включение только там, где доказана экономия
+
+В `_v2_build_model`, после нормализации `d`, `s`, перед построением циклов:
+
+```python
+M = sum(max(0, len(seq) - 1) for seq in messages)
+prefixes = [seq[0] for seq in messages if seq]
+
+v3 = (
+    distinct_mode == "auto"
+    and n == 83
+    and d != 0
+    and M >= 706
+    and len(set(prefixes)) == len(prefixes)
+    and all(
+        all(left != right for left, right in zip(seq, seq[1:]))
+        for seq in messages
+    )
+)
+
+removed = 0
+```
+
+Порог `706` достаточен даже для неувеличения **числа записей коэффициентов**:
+
+\[
+2M\ge1411.
+\]
+
+В блоке создания нового `hit` оберните **только обратное направление** следующим условием:
+
+```python
+if v3 and t + 1 < len(sequence) and other == sequence[t + 1]:
+    removed += 1
+else:
+    model.add_linear_expression_in_domain(
+        old - b, nonzero_difference
+    ).only_enforce_if(hit.Not())
+```
+
+Создание `hit`, прямое направление, создание `new`, `Element`, домены и индексы выходов не меняйте.
+
+В конце вместо безусловного вызова `_v2_add_distinct`:
+
+```python
+if v3:
+    _reduced_require(removed == M, "Удалено не ровно M ограничений")
+    for block in _v3_cover_blocks_83():
+        check()
+        model.add_all_different([initial[i] for i in block])
+    encoding = "small5-v3"
+else:
+    encoding = _v2_add_distinct(
+        model, initial, updates, d, check, distinct_mode
+    )
+```
+
+На остальных входах остаётся исходное построение v2.
+
+## 5. Lean-формализация
+
+Файл `DeckReduction.lean`, в проекте с mathlib.
+
+Здесь формализованы:
+
+- разделение соседних окон;
+- эквивалентность полного и сокращённого обновления;
+- полнота обоих покрытий;
+- эквивалентность старой и новой CSP на **тех же переменных**;
+- подсчёт метрик по размерам покрытия и числу блоков обновления.
+
+`Shared` обозначает неизменённые ограничения: домены, модульные равенства и ограничения окон. `immediate` — фиксированная разметка обновления следующей карты, **не новая переменная решателя**. Тактика `omega` поддерживает используемую здесь целочисленную арифметику с постоянным модулем 83. ([lean-lang.org](https://lean-lang.org/doc/reference/latest/Tactic-Proofs/Tactic-Reference/))
+
+```lean
+import Mathlib
+
+set_option maxHeartbeats 0
+set_option maxRecDepth 100000
+
+namespace DeckReduction
+
+/-! 1. Следующая входная позиция не равна b. -/
+
+theorem window_disjoint
+    (q s d k a b z : Int)
+    (hlo : k ≤ (d - s) % 83)
+    (hhi : k ≤ 83 - (d - s) % 83)
+    (ha : (a - q) % 83 < k)
+    (hb : b = (a + d) % 83)
+    (hz : (z - (q + s)) % 83 < k) :
+    b ≠ z := by
+  omega
+
+/-! 2. Удаляем только обратное направление hit. -/
+
+def Full (a b x y : Int) (hit : Bool) : Prop :=
+  (hit = true → x = b) ∧
+  (hit = false → x ≠ b) ∧
+  y = if hit = true then a else x
+
+def Half (a b x y : Int) (hit : Bool) : Prop :=
+  (hit = true → x = b) ∧
+  y = if hit = true then a else x
+
+theorem drop_reverse
+    (a b x y : Int) (hit : Bool)
+    (hy : y ≠ b) :
+    Full a b x y hit ↔ Half a b x y hit := by
+  constructor
+  · rintro ⟨ht, _, hmux⟩
+    exact ⟨ht, hmux⟩
+  · rintro ⟨ht, hmux⟩
+    refine ⟨ht, ?_, hmux⟩
+    intro hf hxb
+    have hyx : y = x := by
+      simpa [hf] using hmux
+    exact hy (hyx.trans hxb)
+
+/-! 3. Конкретные покрытия 83 начальных переменных. -/
+
+abbrev Card := Fin 83
+abbrev Block := List Card
+abbrev Cover := List Block
+
+def keep83 (xs : List Nat) : Block :=
+  xs.filterMap fun i =>
+    if hi : i < 83 then
+      some (⟨i, hi⟩ : Card)
+    else
+      none
+
+def pairs (n : Nat) : List (Nat × Nat) :=
+  (List.range n).flatMap fun i =>
+    ((List.range n).filter fun j => decide (i < j)).map
+      fun j => (i, j)
+
+def oldCover : Cover :=
+  (pairs 9).map fun gh =>
+    (List.finRange 83).filter fun i =>
+      decide (i.val % 9 = gh.1 ∨ i.val % 9 = gh.2)
+
+def lineBlock (slope intercept : Nat) : Block :=
+  keep83 ((List.range 5).map fun row =>
+    17 * row + (slope * row + intercept) % 17)
+
+def rowBlock (row left right : Nat) : Block :=
+  keep83
+    ((([left, left + 9, right, right + 9] : List Nat).filter
+      fun column => decide (column < 17)).map
+        fun column => 17 * row + column)
+
+def newCover : Cover :=
+  ((List.range 17).flatMap fun slope =>
+    (List.range 17).map fun intercept =>
+      lineBlock slope intercept)
+  ++
+  ((List.range 5).flatMap fun row =>
+    (pairs 9).map fun gh =>
+      rowBlock row gh.1 gh.2)
+
+def PairCover (c : Cover) : Prop :=
+  ∀ i j : Card, i ≠ j →
+    ∃ b ∈ c, i ∈ b ∧ j ∈ b
+
+def NoRepeats (c : Cover) : Prop :=
+  ∀ b ∈ c, b.Nodup
+
+def totalArity (c : Cover) : Nat :=
+  (c.map List.length).sum
+
+def maximumArity (c : Cover) : Nat :=
+  c.foldl (fun acc b => max acc b.length) 0
+
+-- Закрытые конечные сертификаты.
+-- Используется kernel-checked decide, не native_decide.
+
+theorem old_cover_ok :
+    PairCover oldCover ∧ NoRepeats oldCover := by
+  decide
+
+theorem new_cover_ok :
+    PairCover newCover ∧ NoRepeats newCover := by
+  decide
+
+theorem old_shape :
+    oldCover.length = 36 ∧
+    totalArity oldCover = 664 ∧
+    maximumArity oldCover = 20 := by
+  decide
+
+theorem new_shape :
+    newCover.length = 469 ∧
+    totalArity newCover = 2075 ∧
+    maximumArity newCover = 5 := by
+  decide
+
+/-! 4. Покрытие эквивалентно полному AllDifferent. -/
+
+def Covered (c : Cover) (p : Card → Int) : Prop :=
+  ∀ b ∈ c, b.Pairwise (fun i j => p i ≠ p j)
+
+theorem covered_iff_injective
+    (c : Cover)
+    (hpair : PairCover c)
+    (hnodup : NoRepeats c)
+    (p : Card → Int) :
+    Covered c p ↔ Function.Injective p := by
+  constructor
+  · intro hc i j hp
+    by_cases hij : i = j
+    · exact hij
+    · rcases hpair i j hij with ⟨b, hb, hi, hj⟩
+      have hs : Symmetric (fun i j : Card => p i ≠ p j) := by
+        intro i j hneq heq
+        exact hneq heq.symm
+      have hneq : p i ≠ p j :=
+        (hc b hb).forall hs hi hj hij
+      exact False.elim (hneq hp)
+  · intro hp b hb
+    exact (hnodup b hb).imp
+      (fun {i j} hij heq => hij (hp heq))
+
+theorem covers_equivalent (p : Card → Int) :
+    Covered oldCover p ↔ Covered newCover p :=
+  (covered_iff_injective oldCover
+    old_cover_ok.1 old_cover_ok.2 p).trans
+  (covered_iff_injective newCover
+    new_cover_ok.1 new_cover_ok.2 p).symm
+
+/-! 5. Эквивалентность всех обновлений и всей CSP. -/
+
+structure Update where
+  q : Int
+  s : Int
+  d : Int
+  k : Int
+  a : Int
+  b : Int
+  x : Int
+  y : Int
+  hit : Bool
+  immediate : Bool
+
+def Valid (u : Update) : Prop :=
+  u.k ≤ (u.d - u.s) % 83 ∧
+  u.k ≤ 83 - (u.d - u.s) % 83 ∧
+  (u.a - u.q) % 83 < u.k ∧
+  u.b = (u.a + u.d) % 83 ∧
+  (u.immediate = true →
+    (u.y - (u.q + u.s)) % 83 < u.k)
+
+def oldUpdate (u : Update) : Prop :=
+  Full u.a u.b u.x u.y u.hit
+
+def newUpdate (u : Update) : Prop :=
+  if u.immediate = true then
+    Half u.a u.b u.x u.y u.hit
+  else
+    Full u.a u.b u.x u.y u.hit
+
+theorem update_equivalent
+    (u : Update) (hv : Valid u) :
+    oldUpdate u ↔ newUpdate u := by
+  rcases hv with ⟨hlo, hhi, ha, hb, hnext⟩
+  by_cases hi : u.immediate = true
+  · have hby : u.b ≠ u.y :=
+      window_disjoint
+        u.q u.s u.d u.k u.a u.b u.y
+        hlo hhi ha hb (hnext hi)
+    have hyb : u.y ≠ u.b := by
+      intro h
+      exact hby h.symm
+    simpa [oldUpdate, newUpdate, hi] using
+      drop_reverse u.a u.b u.x u.y u.hit hyb
+  · simp [oldUpdate, newUpdate, hi]
+
+-- R содержит остальные неизменённые формулы.
+-- Valid — значение уже имеющихся окон и модульных ограничений.
+def Shared (R : Prop) (us : List Update) : Prop :=
+  R ∧ ∀ u ∈ us, Valid u
+
+def OldCSP
+    (R : Prop) (p : Card → Int) (us : List Update) : Prop :=
+  Shared R us ∧
+  Covered oldCover p ∧
+  ∀ u ∈ us, oldUpdate u
+
+def NewCSP
+    (R : Prop) (p : Card → Int) (us : List Update) : Prop :=
+  Shared R us ∧
+  Covered newCover p ∧
+  ∀ u ∈ us, newUpdate u
+
+theorem whole_equivalence
+    (R : Prop) (p : Card → Int) (us : List Update) :
+    OldCSP R p us ↔ NewCSP R p us := by
+  unfold OldCSP NewCSP
+  constructor
+  · rintro ⟨hshared, hcover, hupdates⟩
+    refine ⟨hshared, (covers_equivalent p).mp hcover, ?_⟩
+    intro u hu
+    exact (update_equivalent u (hshared.2 u hu)).mp
+      (hupdates u hu)
+  · rintro ⟨hshared, hcover, hupdates⟩
+    refine ⟨hshared, (covers_equivalent p).mpr hcover, ?_⟩
+    intro u hu
+    exact (update_equivalent u (hshared.2 u hu)).mpr
+      (hupdates u hu)
+
+/-! 6. Метаданные текущего CSV. -/
+
+def messageLengths : List Nat :=
+  [99, 103, 118, 102, 137, 124, 119, 120, 114]
+
+def M : Nat :=
+  (messageLengths.map fun length => length - 1).sum
+
+theorem M_value : M = 1027 := by
+  decide
+
+theorem prefixes_unique :
+    ([50, 80, 36, 76, 63, 34, 27, 77, 33] : List Nat).Nodup := by
+  decide
+
+/-! 7. Подсчёт метрик по блокам входного protobuf.
+
+На одно обновление:
+  true-импликация:  1 ограничение, арность 3, 2 коэффициента, 2 RHS
+  false-импликация: 1 ограничение, арность 3, 2 коэффициента, 4 RHS
+  legacy Element:  1 ограничение, арность 4, 0 коэффициентов, 0 RHS
+
+На одно b:
+  int_mod:         1 ограничение, арность 2, 2 коэффициента, 0 RHS
+
+AllDifferent размера r:
+                   1 ограничение, арность r, r коэффициентов, 0 RHS
+-/
+
+structure Stats where
+  variables : Nat
+  constraints : Nat
+  arity : Nat
+  maxArity : Nat
+  coefficientEntries : Nat
+  maxCoefficient : Nat
+  rhsEndpoints : Nat
+
+def countStats
+    (c : Cover) (updates moves removed : Nat) : Stats :=
+  {
+    variables := 83 + moves + 2 * updates
+    constraints :=
+      moves + 2 * updates + (updates - removed) + c.length
+    arity :=
+      2 * moves + 7 * updates
+        + 3 * (updates - removed) + totalArity c
+    maxArity := max 4 (maximumArity c)
+    coefficientEntries :=
+      2 * moves + 2 * updates
+        + 2 * (updates - removed) + totalArity c
+    maxCoefficient := 1
+    rhsEndpoints :=
+      2 * updates + 4 * (updates - removed)
+  }
+
+def NoWorse (new old : Stats) : Prop :=
+  new.variables ≤ old.variables ∧
+  new.constraints ≤ old.constraints ∧
+  new.arity ≤ old.arity ∧
+  new.maxArity ≤ old.maxArity ∧
+  new.coefficientEntries ≤ old.coefficientEntries ∧
+  new.maxCoefficient ≤ old.maxCoefficient ∧
+  new.rhsEndpoints ≤ old.rhsEndpoints
+
+theorem metrics_improve
+    (E : Nat) (hE : M ≤ E) :
+    NoWorse
+      (countStats newCover E M M)
+      (countStats oldCover E M 0) ∧
+    4 * (countStats newCover E M M).maxArity =
+      (countStats oldCover E M 0).maxArity := by
+  have he : 1027 ≤ E := by
+    simpa only [M_value] using hE
+  rcases old_shape with ⟨oc, oa, om⟩
+  rcases new_shape with ⟨nc, na, nm⟩
+  dsimp [NoWorse, countStats]
+  simp only [M_value, oc, oa, om, nc, na, nm]
+  refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩, ?_⟩ <;> omega
+
+end DeckReduction
+
+#print axioms DeckReduction.whole_equivalence
+#print axioms DeckReduction.metrics_improve
+```
+
+Проверка:
+
+```bash
+lake env lean DeckReduction.lean
+```
+
+Это доказывает **эквивалентность редукции CSP**, а не формальную корректность HTTP/SQLite-частей сервера или реализации OR-Tools.
+
+Для серверного использования новой модели задайте отдельную версию и рабочую копию. И не путайте уменьшение максимальной арности в четыре раза с обещанием четырёхкратного ускорения поиска: последнее здесь не утверждается.
